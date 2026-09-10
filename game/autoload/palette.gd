@@ -7,6 +7,13 @@ extends Node
 
 signal changed
 
+## The one face for every label: a thin condensed sans, uppercase and
+## letterspaced, from the system (Avenir Next Condensed). Labels get it
+## through the project theme; drawn text takes it from here. DISPLAY is
+## the ultra-light cut for large numerals (the clock).
+const FONT: Font = preload("res://fonts/ui.tres")
+const DISPLAY: Font = preload("res://fonts/display.tres")
+
 const VOID := {
 	"ground": Color("#05070D"),
 	"frame": Color("#6F7FA8"),

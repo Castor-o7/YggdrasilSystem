@@ -23,6 +23,10 @@ window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 window/per_pixel_transparency/allowed=true
 
+[gui]
+
+theme/custom_font="res://fonts/ui.tres"
+
 [rendering]
 
 viewport/transparent_background=true

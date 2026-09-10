@@ -61,7 +61,7 @@ class Branch:
 
 
 func _ready() -> void:
-	_font = ThemeDB.fallback_font
+	_font = Palette.FONT
 
 
 func _process(dt: float) -> void:

@@ -77,11 +77,15 @@ YggdrasilSystem/
     terminal_zen_profile.*   builds and imports the "Yggdrasil" Terminal profile
   dist/                      built app (gitignored)
   game/
-    project.godot            4.3, Forward+, transparent, canvas_items/expand
+    project.godot            4.3, Forward+, transparent, canvas_items/expand,
+                             theme font fonts/ui.tres
     export_presets.cfg       macOS preset for tools/build_app.sh; carries the
                              NSAppleEventsUsageDescription zen needs
     fonts/the_one_ring.ttf   dingbat font: s,t,u,v are the Ring verse in Tengwar
                              (freeware, non-commercial; see the .txt beside it)
+    fonts/ui.tres            Avenir Next Condensed (system), letterspaced: every
+                             label in both apps, via the theme and Palette.FONT
+    fonts/display.tres       its Ultra Light cut, for the clock's numerals
     bin/yggapps              built helper (build.sh makes it)
     autoload/palette.gd      "Palette": VOID colors, breath
     autoload/pace.gd         "Pace": the frame rate governor (see Cost at idle)

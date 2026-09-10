@@ -19,7 +19,7 @@ var _font: Font
 
 
 func _ready() -> void:
-	_font = ThemeDB.fallback_font
+	_font = Palette.FONT
 
 
 func set_shown(on: bool) -> void:

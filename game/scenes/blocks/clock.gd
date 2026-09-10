@@ -12,7 +12,8 @@ const MONTHS := ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", 
 func _ready() -> void:
 	var light := Palette.color("light")
 	time_label.add_theme_color_override("font_color", light)
-	time_label.add_theme_font_size_override("font_size", 26)
+	time_label.add_theme_font_override("font", Palette.DISPLAY)
+	time_label.add_theme_font_size_override("font_size", 30)
 	date_label.add_theme_color_override("font_color", Palette.dim(light, 0.6))
 	date_label.add_theme_font_size_override("font_size", 9)
 	_tick()
