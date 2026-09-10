@@ -68,6 +68,8 @@ MagitechDesk/
     build.sh                 swiftc -O -o ../game/bin/yggapps main.swift
   game/
     project.godot            4.3, Forward+, transparent, canvas_items/expand
+    fonts/the_one_ring.ttf   dingbat font: s,t,u,v are the Ring verse in Tengwar
+                             (freeware, non-commercial; see the .txt beside it)
     bin/yggapps              built helper (build.sh makes it)
     autoload/palette.gd      "Palette": VOID colors, GUMMI colors, breath
     autoload/workspace.gd    "Workspace": spawns yggapps, one App record per
@@ -78,11 +80,14 @@ MagitechDesk/
     scenes/void/             void.tscn: the shader quad + tree.gd (live)
     scenes/hull/             hull.tscn: drawn rail (hairline + ruler ticks)
                              and column slots, dock(); sigil_block.tscn:
-                             SigilBlock, a magic circle with a title and a
+                             SigilBlock, a magic circle (no drawn name) with a
                              Content container in the middle
     scenes/blocks/           instruments that go inside blocks: clock
     scenes/hull/nerviewer_dock.gd  measures the NERViewer sigil, writes the
                              dock file, launches NERViewer, cleans up
+    scenes/hull/inscription.gd  Inscription: the verse strips rasterized near
+                             display size and laid along the middle ring as
+                             textured quads (replaced the text ring 2026-09-09)
     tools/shots.tscn/.gd     headless render: void_live (real apps, if the
                              helper runs), void_ground, void_overlay
 ```

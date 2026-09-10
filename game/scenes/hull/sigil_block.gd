@@ -5,34 +5,35 @@ extends Control
 ## every other ring the other way. Hairlines, pale light, real alpha: the
 ## same register as the void, so the instruments belong to it.
 
-const LABEL_SIZE := 8
 const GLYPH_COUNT := 28
-const TEXT_RING_SEP := "  ·  "
+## The middle ring carries the Ring verse in Tengwar (fonts/the_one_ring.ttf,
+## see Inscription), this tall. It replaced a ring of the title and
+## "yggdrasil" as text on 2026-09-09.
+const INSCRIPTION_HEIGHT := 9.0
 
 ## Rings, outermost first: radius inset from the edge, angular speed
 ## (radians per second; sign is chirality), and what the ring carries.
 const RINGS := [
 	{"inset": 6.0, "speed": 0.05, "kind": "glyphs"},
-	{"inset": 24.0, "speed": -0.08, "kind": "text"},
+	{"inset": 24.0, "speed": -0.08, "kind": "inscription"},
 	{"inset": 38.0, "speed": 0.14, "kind": "arcs"},
 ]
 const INNER_INSET := 46.0
 
-@export var title := "":
-	set(v):
-		title = v
-		queue_redraw()
+## The instrument's name. Not drawn (the disc stays bare); kept for the
+## dock and for tools that need to tell blocks apart.
+@export var title := ""
 @export var seed := 1
 
 @onready var content: MarginContainer = $Content
 
 var _glyphs: Array = []   # per glyph: Array of strokes; a stroke is [kind, a, b]
-var _font: Font
+var _inscription: Inscription
 var _t := 0.0
 
 
 func _ready() -> void:
-	_font = ThemeDB.fallback_font
+	_inscription = Inscription.new()
 	_build_glyphs()
 	resized.connect(_fit_content)
 	_fit_content()
@@ -106,9 +107,9 @@ func _draw() -> void:
 				for i in GLYPH_COUNT:
 					var a := rot + TAU * float(i) / float(GLYPH_COUNT)
 					_draw_glyph(c + Vector2.from_angle(a) * r, a + PI / 2.0, _glyphs[i], Palette.dim(light, 0.55 * breathe))
-			"text":
+			"inscription":
 				draw_arc(c, r + 7.0, 0.0, TAU, 128, Palette.dim(frame, 0.16 * breathe), 1.0, true)
-				_draw_text_ring(c, r, rot, Palette.dim(light, 0.5 * breathe))
+				_inscription.draw(self, c, r, rot, INSCRIPTION_HEIGHT, Palette.dim(light, 0.7 * breathe))
 				draw_arc(c, r - 7.0, 0.0, TAU, 128, Palette.dim(frame, 0.16 * breathe), 1.0, true)
 			"arcs":
 				for k in 3:
@@ -121,12 +122,6 @@ func _draw() -> void:
 					var long := k % 6 == 0
 					draw_line(c + d * (r - 3.0), c + d * (r - (7.0 if long else 5.0)), Palette.dim(frame, 0.45 * breathe), 1.0, true)
 
-	# The name, at the foot of the disc, tiny and upright.
-	if title != "":
-		var label := title.to_upper()
-		var w := _font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, LABEL_SIZE).x
-		draw_string(_font, Vector2(c.x - w * 0.5, c.y + ri - 5.0), label, HORIZONTAL_ALIGNMENT_LEFT, -1, LABEL_SIZE, Palette.dim(light, 0.55 * breathe))
-
 
 func _draw_glyph(at: Vector2, angle: float, strokes: Array, col: Color) -> void:
 	draw_set_transform(at, angle, Vector2.ONE)
@@ -138,27 +133,3 @@ func _draw_glyph(at: Vector2, angle: float, strokes: Array, col: Color) -> void:
 			"arc": draw_arc(s[1], s[2].x, s[2].y, s[2].y + PI, 10, col, 1.0, true)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
-
-## The title and the system's name circle the disc, glyph by glyph, each
-## character standing on the ring.
-func _draw_text_ring(c: Vector2, r: float, rot: float, col: Color) -> void:
-	var text := ((title if title != "" else "sigil") + TEXT_RING_SEP + "yggdrasil" + TEXT_RING_SEP).to_upper()
-	var widths: Array[float] = []
-	var total := 0.0
-	for ch in text:
-		var w := _font.get_char_size(ch.unicode_at(0), LABEL_SIZE).x
-		widths.append(w)
-		total += w
-	var circumference := TAU * r
-	var repeats := maxi(1, int(floor(circumference / total)))
-	var step_scale := circumference / (total * repeats)
-	var a := rot
-	for rep in repeats:
-		for i in text.length():
-			var w := widths[i] * step_scale
-			var mid := a + (w * 0.5) / r
-			var at := c + Vector2.from_angle(mid) * r
-			draw_set_transform(at, mid + PI / 2.0, Vector2.ONE)
-			_font.draw_char(get_canvas_item(), Vector2(-widths[i] * 0.5, LABEL_SIZE * 0.35), text.unicode_at(i), LABEL_SIZE, col)
-			a += w / r
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
