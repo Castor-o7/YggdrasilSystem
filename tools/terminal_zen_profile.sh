@@ -5,6 +5,10 @@
 set -e
 cd "$(dirname "$0")/.."
 mkdir -p terminal
+# Remember which profile the zen profile is built from, so the cockpit can
+# hand Terminal back to it even if its own memory of it is lost.
+src=$(defaults read com.apple.Terminal "Default Window Settings" 2>/dev/null || echo Basic)
+[ "$src" = "Yggdrasil" ] || echo "$src" > terminal/.source
 swiftc -O -o terminal/.zenprof tools/terminal_zen_profile.swift 2>/dev/null
 terminal/.zenprof terminal/Yggdrasil.terminal
 open terminal/Yggdrasil.terminal

@@ -4,3 +4,4 @@ screenshots/
 terminal/.zenprof
 dist/
 .DS_Store
+terminal/.source

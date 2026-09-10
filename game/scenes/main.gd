@@ -145,13 +145,19 @@ func set_zen(on: bool) -> void:
 
 ## The profile to hand Terminal back. Never the zen profile itself: if zen
 ## was already in force when it was read (a restart with zen on, a crash),
-## the earlier answer stands, and failing that Terminal's own "Basic".
+## the earlier answer stands; failing that, the profile the zen profile
+## was built from (tools/terminal_zen_profile.sh records it in
+## terminal/.source); failing that, Terminal's own "Basic". Josh's default
+## was Homebrew, and a guess of "Basic" lost it once (2026-09-10).
 func _remember_terminal(name: String) -> void:
-	if name.is_empty() or name == TERM_PROFILE:
-		if _term_prev.is_empty() or _term_prev == TERM_PROFILE:
-			_term_prev = "Basic"
+	if not name.is_empty() and name != TERM_PROFILE:
+		_term_prev = name
 		return
-	_term_prev = name
+	if not _term_prev.is_empty() and _term_prev != TERM_PROFILE:
+		return
+	var source := Paths.find_up("terminal/.source")
+	var from := FileAccess.get_file_as_string(source).strip_edges() if not source.is_empty() else ""
+	_term_prev = from if not from.is_empty() and from != TERM_PROFILE else "Basic"
 
 
 func _apply_terminal(on: bool) -> void:
