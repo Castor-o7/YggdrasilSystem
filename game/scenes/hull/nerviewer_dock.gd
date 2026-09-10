@@ -6,11 +6,15 @@ extends Node
 ## first reports, it is launched once. On exit the file is removed and
 ## NERViewer goes back to being itself.
 
+const Paths := preload("res://scripts/paths.gd")
 const BUNDLE_ID := "edu.pdx.josh.nerviewer"
-const APP_CANDIDATES := [
-	"res://../../NERViewer/dist/NERViewer.app",
-	"/Applications/NERViewer.app",
-]
+## The sibling repo's built app first (found from the editor or from an
+## exported cockpit alike), then an installed copy.
+const APP_SIBLING := "NERViewer/dist/NERViewer.app"
+const APP_INSTALLED := "/Applications/NERViewer.app"
+## Wait this long after the workspace starts reporting before launching:
+## at login NERViewer's own launch agent may still be coming up.
+const LAUNCH_GRACE := 5.0
 const POLL := 0.5
 
 var block: SigilBlock
@@ -54,7 +58,7 @@ func _write(rect: Rect2i) -> void:
 	DirAccess.make_dir_recursive_absolute(_dock_path.get_base_dir())
 	var cfg := ConfigFile.new()
 	cfg.set_value("dock", "rect", rect)
-	cfg.set_value("dock", "by", "MagitechDesk")
+	cfg.set_value("dock", "by", "Yggdrasil System")
 	cfg.set_value("dock", "pid", OS.get_process_id())  # so a crash cannot leave NERViewer stranded
 	if cfg.save(_dock_path) != OK:
 		push_warning("could not write " + _dock_path)
@@ -68,12 +72,14 @@ func running() -> bool:
 func _maybe_launch() -> void:
 	if _launched or Workspace.source_name != "yggapps" or Workspace.apps.is_empty():
 		return
-	_launched = true  # once per session; if Josh quits it, it stays quit
 	if running():
+		_launched = true
 		return
-	for c in APP_CANDIDATES:
-		var path: String = ProjectSettings.globalize_path(c) if c.begins_with("res://") else c
-		if DirAccess.dir_exists_absolute(path):
+	if Workspace.clock < LAUNCH_GRACE:
+		return
+	_launched = true  # once per session; if Josh quits it, it stays quit
+	for path in [Paths.find_up(APP_SIBLING), APP_INSTALLED]:
+		if not path.is_empty() and DirAccess.dir_exists_absolute(path):
 			OS.create_process("/usr/bin/open", [path])
 			print("NERViewer dock: launched ", path)
 			return

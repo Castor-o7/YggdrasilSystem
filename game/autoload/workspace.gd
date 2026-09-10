@@ -5,6 +5,8 @@ extends Node
 ## shots tool) a scripted day stands in.
 
 signal changed
+## On-screen window rects changed (something was dragged or resized).
+signal windows_moved
 signal source_changed(name: String)
 
 const HELPER := "res://bin/yggapps"
@@ -101,6 +103,7 @@ func _ingest_windows(by_pid: Dictionary) -> void:
 		for r in list:
 			if r is Array and r.size() == 4:
 				app.rects.append(Rect2(float(r[0]), float(r[1]), float(r[2]), float(r[3])))
+	windows_moved.emit()
 	changed.emit()
 
 

@@ -99,13 +99,18 @@ func _sync(dt: float) -> void:
 			_branches[app.id] = b
 		b.az_target = az
 		b.el_target = el
+	var moving := false   # anything growing, withering or swinging wants frames
 	for id in _branches:
 		var b: Branch = _branches[id]
 		var app = Workspace.apps.get(id)
 		var alive_now: bool = app != null and app.alive
+		if absf(angle_difference(b.az, b.az_target)) > 0.001 or absf(b.el - b.el_target) > 0.001:
+			moving = true
 		b.az = _approach_angle(b.az, b.az_target, TURN * dt)
 		b.el = move_toward(b.el, b.el_target, TURN * dt)
 		if alive_now:
+			if b.life < 1.0 or b.growth < 1.0:
+				moving = true
 			b.life = minf(1.0, b.life + dt / (WITHER * 0.5))
 			b.growth = minf(1.0, b.growth + dt / GROW)
 			var want: int = mini(app.windows, MAX_TWIGS)
@@ -113,13 +118,21 @@ func _sync(dt: float) -> void:
 				b.twigs.append(0.0)
 			for k in b.twigs.size():
 				var g: float = b.twigs[k]
+				if (k < want and g < 1.0) or (k >= want and g > 0.0):
+					moving = true
 				b.twigs[k] = minf(1.0, g + dt / GROW) if k < want else maxf(0.0, g - dt / GROW)
 			while b.twigs.size() > want and b.twigs[-1] <= 0.0:
 				b.twigs.pop_back()
 		else:
+			if b.life > GHOST:
+				moving = true
 			b.life = maxf(GHOST, b.life - dt / WITHER)
 			for k in b.twigs.size():
+				if b.twigs[k] > 0.0:
+					moving = true
 				b.twigs[k] = maxf(0.0, b.twigs[k] - dt / GROW)
+	if moving:
+		Pace.stir(0.25)
 
 
 static func _slot_key(id: String) -> float:

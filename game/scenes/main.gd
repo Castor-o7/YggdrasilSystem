@@ -12,15 +12,7 @@ extends Node2D
 ## settings when it ends or the cockpit quits.
 
 const PREFS := "user://prefs.cfg"
-const FPS_AWAKE := 30
-const FPS_ZEN := 60      # the Terminal paint has to keep up with a drag
-const FPS_MINIMIZED := 3
 const DESIGN := Vector2i(1440, 900)
-
-## The hull, as a fraction of the frame: side columns and the bottom rail.
-## Clicks land here; everywhere else they pass through to the desktop.
-const HULL_SIDE := 0.18
-const HULL_RAIL := 0.08
 
 @onready var wallpaper: TextureRect = $Wallpaper
 @onready var void_layer: ColorRect = $Void
@@ -31,6 +23,7 @@ const HULL_RAIL := 0.08
 const BLOCK := preload("res://scenes/hull/sigil_block.tscn")
 const CLOCK := preload("res://scenes/blocks/clock.tscn")
 const NERVIEWER_DOCK := preload("res://scenes/hull/nerviewer_dock.gd")
+const Paths := preload("res://scripts/paths.gd")
 
 var _nerviewer_dock: Node
 
@@ -46,12 +39,12 @@ var persist := true
 
 
 func _ready() -> void:
-	Engine.max_fps = FPS_AWAKE
-	OS.low_processor_usage_mode = true
 	get_window().size_changed.connect(_update_passthrough)
+	Workspace.windows_moved.connect(_on_windows_moved)
 	_load_prefs()
 	_apply_wallpaper()
 	_dock_blocks()
+	_update_passthrough()
 
 
 ## The instruments. For now: the clock, top of the left column.
@@ -83,6 +76,13 @@ func _dock_blocks() -> void:
 	Workspace.changed.connect(func() -> void: waiting.visible = not _nerviewer_dock.running())
 
 
+## A window moved under the zen paint: draw fast until it settles, so the
+## cover and the frames stay locked to it.
+func _on_windows_moved() -> void:
+	if zen and desktop:
+		Pace.stir(0.75, Pace.FAST)
+
+
 ## Desktop mode: borderless, transparent, on top, covering the usable screen.
 func set_desktop(on: bool) -> void:
 	desktop = on
@@ -103,6 +103,7 @@ func set_desktop(on: bool) -> void:
 	_update_passthrough()
 	frames.set_shown(zen and on)
 	cover.set_shown(zen and on)
+	Pace.stir(1.5)
 	_save_prefs()
 
 
@@ -133,14 +134,26 @@ var _term_prev := ""
 func set_zen(on: bool) -> void:
 	if on and not zen:
 		_zen_prev = _read_zen()
-		_term_prev = Osa.run(TERM_GET)
+		_remember_terminal(Osa.run(TERM_GET))
 	zen = on
 	frames.set_shown(on and desktop)
 	cover.set_shown(on and desktop)
+	Pace.stir(1.5)
 	var want := [true, true] if on else _zen_prev
 	Osa.fire(ZEN_SET % [str(want[0]).to_lower(), str(want[1]).to_lower()])
 	_apply_terminal(on)
 	_save_prefs()
+
+
+## The profile to hand Terminal back. Never the zen profile itself: if zen
+## was already in force when it was read (a restart with zen on, a crash),
+## the earlier answer stands, and failing that Terminal's own "Basic".
+func _remember_terminal(name: String) -> void:
+	if name.is_empty() or name == TERM_PROFILE:
+		if _term_prev.is_empty() or _term_prev == TERM_PROFILE:
+			_term_prev = "Basic"
+		return
+	_term_prev = name
 
 
 func _apply_terminal(on: bool) -> void:
@@ -148,8 +161,8 @@ func _apply_terminal(on: bool) -> void:
 	if profile.is_empty():
 		return
 	if on and Osa.run(TERM_HAS % TERM_PROFILE) != "true":
-		var script := ProjectSettings.globalize_path("res://../tools/terminal_zen_profile.sh")
-		if FileAccess.file_exists(script):
+		var script := Paths.find_up("tools/terminal_zen_profile.sh")
+		if not script.is_empty():
 			OS.execute("/bin/sh", [script])
 		else:
 			print("zen: Terminal profile %s missing and no script to make it" % TERM_PROFILE)
@@ -186,19 +199,28 @@ func _apply_wallpaper() -> void:
 		void_layer.set_ground_alpha(1.0)
 
 
-## A U-shaped polygon: both side columns and the bottom rail. Godot treats
-## an empty polygon as "capture everything", which is what windowed mode wants.
+## Where clicks land: the rail, and each side column only as far down as
+## its instruments reach, joined into one shape by a one-pixel strip along
+## the screen edge. Everything else passes through to the desktop, so a
+## window under the empty part of a column is still the desktop's. Godot
+## treats an empty polygon as "capture everything", which is what windowed
+## mode wants. Window pixels throughout.
 func _update_passthrough() -> void:
 	var win := get_window()
 	if not desktop:
 		win.mouse_passthrough_polygon = PackedVector2Array()
 		return
 	var s := Vector2(win.size)
-	var side := s.x * HULL_SIDE
-	var rail_top := s.y * (1.0 - HULL_RAIL)
+	var k: float = get_viewport().get_final_transform().get_scale().y
+	var side: float = s.x * hull.SIDE
+	var rail_top: float = s.y * (1.0 - hull.RAIL)
+	var left := minf(k * hull.arm_bottom("left"), rail_top)
+	var right := minf(k * hull.arm_bottom("right"), rail_top)
+	var e := 1.0
 	win.mouse_passthrough_polygon = PackedVector2Array([
-		Vector2(0, 0), Vector2(side, 0), Vector2(side, rail_top),
-		Vector2(s.x - side, rail_top), Vector2(s.x - side, 0), Vector2(s.x, 0),
+		Vector2(0, 0), Vector2(side, 0), Vector2(side, left), Vector2(e, left),
+		Vector2(e, rail_top), Vector2(s.x - e, rail_top), Vector2(s.x - e, right),
+		Vector2(s.x - side, right), Vector2(s.x - side, 0), Vector2(s.x, 0),
 		Vector2(s.x, s.y), Vector2(0, s.y),
 	])
 
@@ -209,17 +231,21 @@ func _load_prefs() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(PREFS) != OK:
 		return
+	# Read everything before applying anything: set_desktop() saves the
+	# prefs, and it must not save zen back as off before zen is read.
 	fake_wallpaper = bool(cfg.get_value("look", "wallpaper", false))
-	if bool(cfg.get_value("look", "desktop", false)):
-		set_desktop(true)
+	var want_desktop := bool(cfg.get_value("look", "desktop", false))
 	_zen_prev = [bool(cfg.get_value("zen", "prev_dock", false)), bool(cfg.get_value("zen", "prev_menu", false))]
-	_term_prev = str(cfg.get_value("zen", "prev_terminal", ""))
-	if bool(cfg.get_value("zen", "on", false)):
-		zen = true
+	_remember_terminal(str(cfg.get_value("zen", "prev_terminal", "")))
+	zen = bool(cfg.get_value("zen", "on", false))
+	if want_desktop:
+		set_desktop(true)
+	if zen:
 		frames.set_shown(desktop)
 		cover.set_shown(desktop)
 		Osa.fire(ZEN_SET % ["true", "true"])
 		_apply_terminal(true)
+		_save_prefs()
 
 
 func _save_prefs() -> void:
@@ -244,10 +270,6 @@ func _notification(what: int) -> void:
 
 
 func _process(dt: float) -> void:
-	var minimized := get_window().mode == Window.MODE_MINIMIZED
-	var want := FPS_MINIMIZED if minimized else (FPS_ZEN if zen and desktop else FPS_AWAKE)
-	if Engine.max_fps != want:
-		Engine.max_fps = want
 	# The usable screen changes when the menu bar hides or the display
 	# changes; over the desktop, keep covering all of it.
 	_screen_timer -= dt

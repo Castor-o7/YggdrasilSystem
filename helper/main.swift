@@ -1,4 +1,4 @@
-// yggapps — the MagitechDesk workspace daemon.
+// yggapps — the Yggdrasil System workspace daemon.
 //
 // Prints one JSON object per line at a fixed interval: every application
 // with a Dock presence (activation policy "regular"), its window count,

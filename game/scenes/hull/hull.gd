@@ -29,6 +29,16 @@ func dock(block: Control, side: String, index: int) -> void:
 	_laid_for = Vector2.ZERO
 
 
+## How far down a column its instruments reach, in canvas units. The
+## hull's click area ends there, so windows below stay reachable.
+func arm_bottom(side: String) -> float:
+	var y := GAP
+	for entry in _docked:
+		if entry[1] == side:
+			y += entry[0].size.y + GAP
+	return y
+
+
 func _layout(s: Vector2) -> void:
 	var col_w := s.x * SIDE
 	var next_y := {"left": GAP, "right": GAP}

@@ -3,14 +3,16 @@ config_version=5
 
 [application]
 
-config/name="MagitechDesk"
+config/name="Yggdrasil System"
 config/version="0.1.0"
 run/main_scene="res://scenes/main.tscn"
+run/flush_stdout_on_print=true
 config/features=PackedStringArray("4.3", "Forward Plus")
 
 [autoload]
 
 Palette="*res://autoload/palette.gd"
+Pace="*res://autoload/pace.gd"
 Workspace="*res://autoload/workspace.gd"
 
 [display]

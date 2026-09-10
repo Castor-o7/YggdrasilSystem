@@ -1,4 +1,4 @@
-# MagitechDesk — Spec
+# Yggdrasil System — Spec
 
 The Mac desktop as the cockpit of a magic spaceship, in the register of
 early-90s anime and games. Two references, with distinct jobs:
@@ -16,7 +16,9 @@ early-90s anime and games. Two references, with distinct jobs:
   other ring the other way, in the void's own hairline register.
 
 Decided 2026-09-09. Sibling of NERViewer (`../NERViewer`), which becomes
-the first instrument block.
+the first instrument block. Named the Yggdrasil System the same night;
+the working title MagitechDesk is retired (project name, bundle id
+`edu.pdx.josh.yggdrasil`, the dock file's `by`).
 
 ## Frame
 
@@ -35,8 +37,10 @@ the first instrument block.
 
 The middle stays nearly clear: that is where real windows live. In
 desktop mode the window is always on top and covers the screen, but the
-mouse passthrough polygon is the hull (both side columns and the rail),
-so clicks anywhere else go straight to the desktop. The void is a canopy
+mouse passthrough polygon is the hull: the rail, and each side column
+only as far down as its instruments reach (tightened 2026-09-09; the
+full columns had been swallowing clicks meant for windows under them).
+Clicks anywhere else go straight to the desktop. The void is a canopy
 you look through, not a wall.
 
 ## Principles
@@ -60,21 +64,34 @@ you look through, not a wall.
 ## Layout
 
 ```
-MagitechDesk/
+YggdrasilSystem/
   SPEC.md
   screenshots/               rendered by tools/shots.tscn; judged by eye
   helper/
     main.swift               yggapps: the workspace daemon (one file, no deps)
     build.sh                 swiftc -O -o ../game/bin/yggapps main.swift
+  tools/
+    build_app.sh             helper + export + bundle + re-sign -> dist/YggdrasilSystem.app
+    launch_agent.sh          install|remove a LaunchAgent that starts it at login
+    entitlements.plist       Apple Events automation, kept through the re-sign
+    terminal_zen_profile.*   builds and imports the "Yggdrasil" Terminal profile
+  dist/                      built app (gitignored)
   game/
     project.godot            4.3, Forward+, transparent, canvas_items/expand
+    export_presets.cfg       macOS preset for tools/build_app.sh; carries the
+                             NSAppleEventsUsageDescription zen needs
     fonts/the_one_ring.ttf   dingbat font: s,t,u,v are the Ring verse in Tengwar
                              (freeware, non-commercial; see the .txt beside it)
     bin/yggapps              built helper (build.sh makes it)
-    autoload/palette.gd      "Palette": VOID colors, GUMMI colors, breath
+    autoload/palette.gd      "Palette": VOID colors, breath
+    autoload/pace.gd         "Pace": the frame rate governor (see Cost at idle)
     autoload/workspace.gd    "Workspace": spawns yggapps, one App record per
                              application, alive or withered; scripted day
                              as the fallback
+    scripts/osa.gd           Osa: AppleScript via files in user://
+    scripts/paths.gd         Paths: files outside the pck (the sibling
+                             NERViewer app, tools/) found from the editor
+                             or an exported app alike
     shaders/void.gdshader    lattice x2, nodes, motes, radial/bottom mask
     scenes/main.tscn/.gd     window modes, prefs, passthrough, keys
     scenes/void/             void.tscn: the shader quad + tree.gd (live)
@@ -90,10 +107,16 @@ MagitechDesk/
                              textured quads (replaced the text ring 2026-09-09)
     tools/shots.tscn/.gd     headless render: void_live (real apps, if the
                              helper runs), void_ground, void_overlay
+    tools/bench.tscn/.gd     idle-cost bench: windowed, prefs untouched,
+                             prints % of one core at a chosen frame rate
 ```
 
 Run: `/Applications/Godot.app/Contents/MacOS/Godot --path game`
 Shots: `... --path game res://tools/shots.tscn`
+Build: `tools/build_app.sh` (then `tools/launch_agent.sh install` to start
+it at login; NERViewer has the same pair). The exported app finds the
+helper beside its executable and NERViewer through `Paths.find_up`, so
+the two repos only have to stay siblings.
 
 Keys: B desktop mode, Z zen, W fake wallpaper (windowed), S screenshot,
 Q quit.
@@ -124,6 +147,44 @@ Z. Three things happen, all undone by Z again or by quitting:
 
 One Space, one screen, for now.
 
+The profile handed back when zen ends is never "Yggdrasil" itself: if
+that is what Terminal reports when zen begins (a restart with zen on),
+the earlier answer stands, or failing that "Basic". Found 2026-09-09
+after a restart had saved "Yggdrasil" as the profile to restore.
+
+## Cost at idle
+
+Measured 2026-09-09 on the M2, windowed 1440x900 with the live
+workspace (`tools/bench.tscn`, the % of one core the cockpit's process
+used over 20 s):
+
+| frame rate | Forward+ | Mobile | Compatibility |
+|---|---|---|---|
+| 12 | 11% | | |
+| 30 | 21% | 22% | 22% |
+| 60 | 37% | | |
+
+Linear in the frame rate, indifferent to the renderer, so Forward+ stays
+and the rate is what is managed. Over the desktop (the screen-sized,
+always-on-top window) the same frame costs about the same: 24% desktop,
+21% desktop without per-pixel alpha, 23% windowed, in one later run at
+12 fps. The absolute numbers drift with the machine's power state (that
+later run was on a low battery and read twice the first one for the
+same work), so compare within one session, never across the table. Before this the cockpit held 60 fps
+whenever zen was on and 30 otherwise, and over the desktop it and the
+docked NERViewer each took about 40% of a core with WindowServer
+another 16% behind them, on battery.
+
+`Pace` (autoload) owns `Engine.max_fps`. At rest it is 12: the lattice
+drifts a pixel or two a second and the sigil rings turn about as fast,
+so nothing visible needs more. Anything quicker asks for it with
+`Pace.stir(seconds, fps)`: the tree while a branch grows, withers or
+swings to its slot (30); the frames and cover while they fade (30); the
+zen paint whenever the helper reports a window rect changed (60 for
+0.75 s, so a drag stays locked and a still desktop costs nothing
+extra). Minimized drops to 3. The rule for new instruments: if it moves
+faster than the rings, it stirs.
+
 ## The workspace helper
 
 `yggapps` prints one JSON line per interval (2 s): `{"t", "interval",
@@ -149,7 +210,7 @@ cockpit runs at 60 fps in zen for the same reason.
 1b. Live tree — done 2026-09-09: helper, Workspace autoload, tree rewired.
 2. First instrument — done 2026-09-09. A Gummi jelly block was built,
    judged, and replaced by the sigil block the same day. Blocks dock by
-   (side, index) in columns 15% of the frame wide; the rail is a drawn
+   (side, index) in columns 18% of the frame wide; the rail is a drawn
    hairline with ticks. The clock is the first instrument.
 3. NERViewer docked — done 2026-09-09. Josh's call: NERViewer stays a
    standalone app. The cockpit reserves a sigil on the right column and
