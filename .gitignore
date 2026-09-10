@@ -1,0 +1,6 @@
+game/bin/
+game/.godot/
+screenshots/
+terminal/.zenprof
+dist/
+.DS_Store

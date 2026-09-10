@@ -1,0 +1,12 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scenes/hull/sigil_block.gd" id="1"]
+
+[node name="SigilBlock" type="Control"]
+custom_minimum_size = Vector2(200, 200)
+offset_right = 200.0
+offset_bottom = 200.0
+script = ExtResource("1")
+
+[node name="Content" type="MarginContainer" parent="."]
+mouse_filter = 2

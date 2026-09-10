@@ -1,0 +1,286 @@
+extends Node2D
+## The cockpit. A fixed 1440x900 composition in the window; over the desktop
+## it grows to cover the screen, always on top, and hands every click that
+## is not on the hull straight through to whatever window is under it.
+##
+## Keys: B toggles desktop mode, Z toggles zen (the macOS Dock and menu
+## bar auto-hide, so the cockpit has the whole screen; both come back
+## when the mouse touches their edge), W toggles a fake wallpaper behind
+## the void (windowed only, for judging the overlay look without leaving
+## the app), S saves a screenshot beside the project, Q or Escape quits.
+## Mode, zen and wallpaper persist; zen restores the system's own
+## settings when it ends or the cockpit quits.
+
+const PREFS := "user://prefs.cfg"
+const FPS_AWAKE := 30
+const FPS_ZEN := 60      # the Terminal paint has to keep up with a drag
+const FPS_MINIMIZED := 3
+const DESIGN := Vector2i(1440, 900)
+
+## The hull, as a fraction of the frame: side columns and the bottom rail.
+## Clicks land here; everywhere else they pass through to the desktop.
+const HULL_SIDE := 0.18
+const HULL_RAIL := 0.08
+
+@onready var wallpaper: TextureRect = $Wallpaper
+@onready var void_layer: ColorRect = $Void
+@onready var hull: Control = $Hull
+@onready var frames: Node2D = $Frames
+@onready var cover: Node2D = $Cover
+
+const BLOCK := preload("res://scenes/hull/sigil_block.tscn")
+const CLOCK := preload("res://scenes/blocks/clock.tscn")
+const NERVIEWER_DOCK := preload("res://scenes/hull/nerviewer_dock.gd")
+
+var _nerviewer_dock: Node
+
+var desktop := false
+var fake_wallpaper := false
+var zen := false
+## The Dock and menu-bar auto-hide settings as they were before zen, so
+## zen can hand them back exactly.
+var _zen_prev := [false, false]
+var _screen_timer := 0.0
+## The shots tool flips modes for the camera; those must not become prefs.
+var persist := true
+
+
+func _ready() -> void:
+	Engine.max_fps = FPS_AWAKE
+	OS.low_processor_usage_mode = true
+	get_window().size_changed.connect(_update_passthrough)
+	_load_prefs()
+	_apply_wallpaper()
+	_dock_blocks()
+
+
+## The instruments. For now: the clock, top of the left column.
+func _dock_blocks() -> void:
+	var clock: SigilBlock = BLOCK.instantiate()
+	clock.title = "chrono"
+	clock.seed = 3
+	clock.size = Vector2(200, 200)
+	clock.get_node("Content").add_child(CLOCK.instantiate())
+	hull.dock(clock, "left", 0)
+	# NERViewer: a sigil with nothing inside; NERViewer's own window fills it.
+	var nerv: SigilBlock = BLOCK.instantiate()
+	nerv.title = "nerviewer"
+	nerv.seed = 7
+	nerv.size = Vector2(256, 256)
+	var waiting := Label.new()
+	waiting.text = "AWAITING\nNERVIEWER"
+	waiting.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	waiting.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	waiting.add_theme_font_size_override("font_size", 9)
+	waiting.add_theme_color_override("font_color", Palette.dim(Palette.color("light"), 0.35))
+	nerv.get_node("Content").add_child(waiting)
+	hull.dock(nerv, "right", 0)
+	if not persist:
+		return  # the shots tool must not launch or dock the real NERViewer
+	_nerviewer_dock = NERVIEWER_DOCK.new()
+	_nerviewer_dock.block = nerv
+	add_child(_nerviewer_dock)
+	Workspace.changed.connect(func() -> void: waiting.visible = not _nerviewer_dock.running())
+
+
+## Desktop mode: borderless, transparent, on top, covering the usable screen.
+func set_desktop(on: bool) -> void:
+	desktop = on
+	var win := get_window()
+	win.transparent = on
+	win.borderless = on
+	win.always_on_top = on
+	if on:
+		var usable := DisplayServer.screen_get_usable_rect(win.current_screen)
+		win.position = usable.position
+		win.size = usable.size
+	else:
+		win.size = DESIGN
+		var screen := DisplayServer.screen_get_usable_rect(win.current_screen)
+		win.position = screen.position + (screen.size - DESIGN) / 2
+	void_layer.set_ground_alpha(0.0 if on else 1.0)
+	_apply_wallpaper()
+	_update_passthrough()
+	frames.set_shown(zen and on)
+	cover.set_shown(zen and on)
+	_save_prefs()
+
+
+## Zen: ask System Events to auto-hide the Dock and the menu bar. This is
+## the setting the user could flip in System Settings, changed live; the
+## first use asks the user to allow the app to control System Events.
+## Over the desktop, zen also frames every open window in hairlines.
+const ZEN_GET := 'tell application "System Events" to tell dock preferences to get {autohide, autohide menu bar}'
+const ZEN_SET := 'tell application "System Events" to tell dock preferences to set {autohide, autohide menu bar} to {%s, %s}'
+
+## Terminal dissolves in zen: its windows switch to the "Yggdrasil"
+## profile, the default profile with a transparent background, so the
+## text sits on the void. tools/terminal_zen_profile.sh makes the profile;
+## the cockpit runs it once if the profile is missing.
+const TERM_PROFILE := "Yggdrasil"
+const TERM_GET := 'tell application "Terminal" to if it is running then get name of default settings'
+const TERM_HAS := 'tell application "Terminal" to exists settings set "%s"'
+const TERM_SET := 'tell application "Terminal"
+if it is running then
+set default settings to settings set "%s"
+set startup settings to settings set "%s"
+set current settings of every tab of every window to settings set "%s"
+end if
+end tell'
+var _term_prev := ""
+
+
+func set_zen(on: bool) -> void:
+	if on and not zen:
+		_zen_prev = _read_zen()
+		_term_prev = Osa.run(TERM_GET)
+	zen = on
+	frames.set_shown(on and desktop)
+	cover.set_shown(on and desktop)
+	var want := [true, true] if on else _zen_prev
+	Osa.fire(ZEN_SET % [str(want[0]).to_lower(), str(want[1]).to_lower()])
+	_apply_terminal(on)
+	_save_prefs()
+
+
+func _apply_terminal(on: bool) -> void:
+	var profile := TERM_PROFILE if on else _term_prev
+	if profile.is_empty():
+		return
+	if on and Osa.run(TERM_HAS % TERM_PROFILE) != "true":
+		var script := ProjectSettings.globalize_path("res://../tools/terminal_zen_profile.sh")
+		if FileAccess.file_exists(script):
+			OS.execute("/bin/sh", [script])
+		else:
+			print("zen: Terminal profile %s missing and no script to make it" % TERM_PROFILE)
+			return
+	Osa.fire(TERM_SET % [profile, profile, profile])
+
+
+static func _read_zen() -> Array:
+	var parts := Osa.run(ZEN_GET).split(",")
+	if parts.size() != 2:
+		return [false, false]
+	return [parts[0].strip_edges() == "true", parts[1].strip_edges() == "true"]
+
+
+## Leaving zen without touching the prefs: the quit path.
+func _release_zen() -> void:
+	if zen:
+		Osa.fire(ZEN_SET % [str(_zen_prev[0]).to_lower(), str(_zen_prev[1]).to_lower()])
+		if not _term_prev.is_empty():
+			Osa.fire(TERM_SET % [_term_prev, _term_prev, _term_prev])
+
+
+func set_fake_wallpaper(on: bool) -> void:
+	fake_wallpaper = on
+	_apply_wallpaper()
+	_save_prefs()
+
+
+func _apply_wallpaper() -> void:
+	wallpaper.visible = fake_wallpaper and not desktop
+	if wallpaper.visible:
+		void_layer.set_ground_alpha(0.0)
+	elif not desktop:
+		void_layer.set_ground_alpha(1.0)
+
+
+## A U-shaped polygon: both side columns and the bottom rail. Godot treats
+## an empty polygon as "capture everything", which is what windowed mode wants.
+func _update_passthrough() -> void:
+	var win := get_window()
+	if not desktop:
+		win.mouse_passthrough_polygon = PackedVector2Array()
+		return
+	var s := Vector2(win.size)
+	var side := s.x * HULL_SIDE
+	var rail_top := s.y * (1.0 - HULL_RAIL)
+	win.mouse_passthrough_polygon = PackedVector2Array([
+		Vector2(0, 0), Vector2(side, 0), Vector2(side, rail_top),
+		Vector2(s.x - side, rail_top), Vector2(s.x - side, 0), Vector2(s.x, 0),
+		Vector2(s.x, s.y), Vector2(0, s.y),
+	])
+
+
+func _load_prefs() -> void:
+	if not persist:
+		return
+	var cfg := ConfigFile.new()
+	if cfg.load(PREFS) != OK:
+		return
+	fake_wallpaper = bool(cfg.get_value("look", "wallpaper", false))
+	if bool(cfg.get_value("look", "desktop", false)):
+		set_desktop(true)
+	_zen_prev = [bool(cfg.get_value("zen", "prev_dock", false)), bool(cfg.get_value("zen", "prev_menu", false))]
+	_term_prev = str(cfg.get_value("zen", "prev_terminal", ""))
+	if bool(cfg.get_value("zen", "on", false)):
+		zen = true
+		frames.set_shown(desktop)
+		cover.set_shown(desktop)
+		Osa.fire(ZEN_SET % ["true", "true"])
+		_apply_terminal(true)
+
+
+func _save_prefs() -> void:
+	if not persist:
+		return
+	var cfg := ConfigFile.new()
+	cfg.set_value("look", "desktop", desktop)
+	cfg.set_value("look", "wallpaper", fake_wallpaper)
+	cfg.set_value("zen", "on", zen)
+	cfg.set_value("zen", "prev_dock", _zen_prev[0])
+	cfg.set_value("zen", "prev_menu", _zen_prev[1])
+	cfg.set_value("zen", "prev_terminal", _term_prev)
+	cfg.save(PREFS)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_save_prefs()
+		_release_zen()
+		if _nerviewer_dock:
+			_nerviewer_dock.release()
+
+
+func _process(dt: float) -> void:
+	var minimized := get_window().mode == Window.MODE_MINIMIZED
+	var want := FPS_MINIMIZED if minimized else (FPS_ZEN if zen and desktop else FPS_AWAKE)
+	if Engine.max_fps != want:
+		Engine.max_fps = want
+	# The usable screen changes when the menu bar hides or the display
+	# changes; over the desktop, keep covering all of it.
+	_screen_timer -= dt
+	if desktop and _screen_timer <= 0.0:
+		_screen_timer = 1.0
+		var win := get_window()
+		var usable := DisplayServer.screen_get_usable_rect(win.current_screen)
+		if win.position != usable.position or win.size != usable.size:
+			win.position = usable.position
+			win.size = usable.size
+
+
+func _unhandled_key_input(event: InputEvent) -> void:
+	if not event.is_pressed() or event.is_echo():
+		return
+	match event.keycode:
+		KEY_B:
+			set_desktop(not desktop)
+		KEY_W:
+			set_fake_wallpaper(not fake_wallpaper)
+		KEY_Z:
+			set_zen(not zen)
+		KEY_Q, KEY_ESCAPE:
+			_save_prefs()
+			_release_zen()
+			if _nerviewer_dock:
+				_nerviewer_dock.release()
+			get_tree().quit()
+		KEY_S:
+			# Note: over the desktop this captures only what the app draws,
+			# on transparent; the desktop behind it is not in the frame.
+			# For the real look, use the system screenshot (Cmd-Shift-3).
+			var stamp := Time.get_datetime_string_from_system().replace(":", "-")
+			var path := ProjectSettings.globalize_path("res://../screenshots/manual_%s.png" % stamp)
+			get_viewport().get_texture().get_image().save_png(path)
+			print("saved ", path)
