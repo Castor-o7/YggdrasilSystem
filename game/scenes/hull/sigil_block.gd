@@ -23,6 +23,10 @@ const INNER_INSET := 46.0
 ## The instrument's name. Not drawn (the disc stays bare); kept for the
 ## dock and for tools that need to tell blocks apart.
 @export var title := ""
+## Bare: nothing is painted inside the inner ring. For a block whose guest
+## is another window (NERViewer), so the cockpit never smokes it over,
+## whichever of the two floating windows the system has put on top.
+var bare := false
 @export var seed := 1
 
 @onready var content: MarginContainer = $Content
@@ -93,8 +97,11 @@ func _draw() -> void:
 
 	# The disc: a faint fill so the instrument has a floor over the desktop.
 	var ri := R - INNER_INSET
-	draw_circle(c, ri, Palette.dim(Palette.color("ground"), 0.35))
-	draw_circle(c, R, Palette.dim(Palette.color("ground"), 0.18))
+	if bare:
+		draw_arc(c, (R + ri) * 0.5, 0.0, TAU, 128, Palette.dim(Palette.color("ground"), 0.18), R - ri, false)
+	else:
+		draw_circle(c, ri, Palette.dim(Palette.color("ground"), 0.35))
+		draw_circle(c, R, Palette.dim(Palette.color("ground"), 0.18))
 	draw_arc(c, ri, 0.0, TAU, 96, Palette.dim(light, 0.28 * breathe), 1.0, true)
 
 	for ring in RINGS:

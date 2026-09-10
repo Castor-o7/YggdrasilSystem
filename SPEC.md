@@ -120,7 +120,7 @@ Z. Three things happen, all undone by Z again or by quitting:
 3. Over the desktop, every other on-screen window gets a hairline frame
    with corner brackets and its app's name, gold for the frontmost app
    (scenes/void/frames.gd, from the `rects` the helper reports in screen
-   points; Terminal is exempt).
+   points; Terminal and NERViewer are exempt).
 
 One Space, one screen, for now.
 
@@ -156,7 +156,10 @@ cockpit runs at 60 fps in zen for the same reason.
    writes NERViewer's `user://dock.cfg` (`[dock] rect=Rect2i, pid`) from
    the sigil's inner disc measured in screen pixels; NERViewer polls that
    file once a second and, while it exists and the pid is alive, shows
-   its core ring alone filling the rect, borderless and on top. The file
+   its core ring alone filling the rect, borderless and on top. While
+   NERViewer runs, the sigil paints nothing inside its inner ring: both
+   apps float at the same window level and the system may put either on
+   top, so the cockpit must never smoke over the guest. The file
    is removed on exit; a dead pid counts as removed. If NERViewer is not
    running when the workspace first reports, the cockpit launches
    `../NERViewer/dist/NERViewer.app` once. Godot on macOS measures

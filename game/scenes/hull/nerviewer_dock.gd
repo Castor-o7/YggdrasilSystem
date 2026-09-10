@@ -13,7 +13,7 @@ const APP_CANDIDATES := [
 ]
 const POLL := 0.5
 
-var block: Control
+var block: SigilBlock
 var _timer := 0.0
 var _last_rect := Rect2i()
 var _launched := false
@@ -31,6 +31,7 @@ func _process(dt: float) -> void:
 	if _timer > 0.0 or block == null:
 		return
 	_timer = POLL
+	block.bare = running()
 	var rect := _screen_rect()
 	if rect != _last_rect:
 		_last_rect = rect

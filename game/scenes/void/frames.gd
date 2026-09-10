@@ -9,6 +9,9 @@ extends Node2D
 const FADE := 0.8
 const CORNER := 14.0
 const LABEL_SIZE := 9
+## No frame for these: Terminal has dissolved into the void in zen, and
+## NERViewer is an instrument of the hull, not a window on the desk.
+const EXEMPT := ["com.apple.Terminal", "edu.pdx.josh.nerviewer"]
 
 var shown := false
 var _alpha := 0.0
@@ -42,8 +45,7 @@ func _draw() -> void:
 	var breathe := 0.85 + 0.15 * Palette.breath()
 	for id in Workspace.apps:
 		var app = Workspace.apps[id]
-		# Terminal has dissolved into the void in zen; no frame for it.
-		if not app.alive or id == "com.apple.Terminal":
+		if not app.alive or id in EXEMPT:
 			continue
 		var col: Color = gold if app.active else frame
 		var line_alpha := (0.55 if app.active else 0.3) * _alpha * breathe
