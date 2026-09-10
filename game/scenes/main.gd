@@ -80,7 +80,7 @@ func _dock_blocks() -> void:
 ## cover and the frames stay locked to it.
 func _on_windows_moved() -> void:
 	if zen and desktop:
-		Pace.stir(0.75, Pace.FAST)
+		Pace.stir(0.75)
 
 
 ## Desktop mode: borderless, transparent, on top, covering the usable screen.
@@ -103,7 +103,6 @@ func set_desktop(on: bool) -> void:
 	_update_passthrough()
 	frames.set_shown(zen and on)
 	cover.set_shown(zen and on)
-	Pace.stir(1.5)
 	_save_prefs()
 
 
@@ -138,7 +137,6 @@ func set_zen(on: bool) -> void:
 	zen = on
 	frames.set_shown(on and desktop)
 	cover.set_shown(on and desktop)
-	Pace.stir(1.5)
 	var want := [true, true] if on else _zen_prev
 	Osa.fire(ZEN_SET % [str(want[0]).to_lower(), str(want[1]).to_lower()])
 	_apply_terminal(on)

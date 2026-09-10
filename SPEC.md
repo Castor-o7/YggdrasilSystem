@@ -168,8 +168,7 @@ used over 20 s):
 | 30 | 21% | 22% | 22% |
 | 60 | 37% | | |
 
-Linear in the frame rate, indifferent to the renderer, so Forward+ stays
-and the rate is what is managed. Over the desktop (the screen-sized,
+Linear in the frame rate, indifferent to the renderer, so Forward+ stays. Over the desktop (the screen-sized,
 always-on-top window) the same frame costs about the same: 24% desktop,
 21% desktop without per-pixel alpha, 23% windowed, in one later run at
 12 fps. The absolute numbers drift with the machine's power state (that
@@ -179,15 +178,14 @@ whenever zen was on and 30 otherwise, and over the desktop it and the
 docked NERViewer each took about 40% of a core with WindowServer
 another 16% behind them, on battery.
 
-`Pace` (autoload) owns `Engine.max_fps`. At rest it is 12: the lattice
-drifts a pixel or two a second and the sigil rings turn about as fast,
-so nothing visible needs more. Anything quicker asks for it with
-`Pace.stir(seconds, fps)`: the tree while a branch grows, withers or
-swings to its slot (30); the frames and cover while they fade (30); the
-zen paint whenever the helper reports a window rect changed (60 for
-0.75 s, so a drag stays locked and a still desktop costs nothing
-extra). Minimized drops to 3. The rule for new instruments: if it moves
-faster than the rings, it stirs.
+`Pace` (autoload) owns `Engine.max_fps`. At rest it is 30, and 30 is
+the floor: a 12 fps rest was tried on 2026-09-10 and read as harsh, so
+below 30 the rate is not a lever for cost. What Pace manages is the
+excursion above it: the zen paint asks for 60 with `Pace.stir(seconds)`
+whenever the helper reports a window rect changed, for 0.75 s, so a
+drag stays locked and a still desktop never pays for 60. Minimized
+drops to 3. The saving against the first build is that 60 is no longer
+held for as long as zen is on.
 
 ## The workspace helper
 

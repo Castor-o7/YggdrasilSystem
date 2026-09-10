@@ -1,16 +1,15 @@
 extends Node
 ## "Pace": the frame rate governor. The cockpit lives on the desktop all
-## day, so at rest it draws only as often as its slowest visible motion
-## needs: the lattice drifts a pixel or two a second, the sigil rings turn
-## about as fast. Anything quicker asks for more with stir(): a branch
-## growing in, the zen paint chasing a dragged window. The highest live
-## request wins, and a minimized window drops to a few frames a second.
+## day. It rests at 30, the floor (a 12 fps rest was tried on 2026-09-10
+## and read as harsh; below 30 the rate is not a lever). Anything that
+## needs more asks with stir(): the zen paint chasing a dragged window
+## runs at 60 until it settles. The highest live request wins, and a
+## minimized window drops to a few frames a second.
 ##
-## Measured 2026-09-09: at 60 fps the cockpit and WindowServer together
-## cost most of a core on an M2; the cost scales with the frame rate.
+## Measured 2026-09-09: the cost scales with the frame rate, and holding
+## 60 whenever zen was on cost most of a core with WindowServer.
 
-const IDLE := 12
-const AWAKE := 30
+const IDLE := 30
 const FAST := 60
 const MINIMIZED := 3
 
@@ -27,7 +26,7 @@ func _ready() -> void:
 
 ## Ask for at least `fps` for the next `seconds`. Repeated calls extend
 ## the same request rather than piling up.
-func stir(seconds: float, fps: int = AWAKE) -> void:
+func stir(seconds: float, fps: int = FAST) -> void:
 	var until := Time.get_ticks_msec() + int(seconds * 1000.0)
 	for r in _requests:
 		if r[1] == fps:
