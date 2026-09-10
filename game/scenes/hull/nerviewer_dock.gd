@@ -15,6 +15,10 @@ const APP_INSTALLED := "/Applications/NERViewer.app"
 ## Wait this long after the workspace starts reporting before launching:
 ## at login NERViewer's own launch agent may still be coming up.
 const LAUNCH_GRACE := 5.0
+## If NERViewer has a launch agent, launchd owns it: kickstart is
+## idempotent (a running job is left alone), so a slow first launch can
+## never end in two copies. Without one, open the app.
+const AGENT := "edu.pdx.josh.nerviewer"
 const POLL := 0.5
 
 var block: SigilBlock
@@ -78,12 +82,23 @@ func _maybe_launch() -> void:
 	if Workspace.clock < LAUNCH_GRACE:
 		return
 	_launched = true  # once per session; if Josh quits it, it stays quit
+	var plist := OS.get_environment("HOME").path_join("Library/LaunchAgents/%s.plist" % AGENT)
+	if FileAccess.file_exists(plist):
+		OS.create_process("/bin/launchctl", ["kickstart", "gui/%d/%s" % [_uid(), AGENT]])
+		print("NERViewer dock: kickstarted ", AGENT)
+		return
 	for path in [Paths.find_up(APP_SIBLING), APP_INSTALLED]:
 		if not path.is_empty() and DirAccess.dir_exists_absolute(path):
 			OS.create_process("/usr/bin/open", [path])
 			print("NERViewer dock: launched ", path)
 			return
 	print("NERViewer dock: app not found; the slot waits")
+
+
+static func _uid() -> int:
+	var out := []
+	OS.execute("/usr/bin/id", ["-u"], out)
+	return int(str(out[0]).strip_edges()) if not out.is_empty() else 501
 
 
 func release() -> void:
