@@ -100,7 +100,9 @@ YggdrasilSystem/
     scenes/main.tscn/.gd     window modes, prefs, passthrough, keys
     scenes/void/             void.tscn: the shader quad + tree.gd (live)
                              + drive.gd (the gearbox of movements) and its
-                             set pieces gate.gd, ether.gd, ruins.gd
+                             set pieces gate.gd, warp.gd, ether.gd, limb.gd,
+                             debris.gd, station.gd, ship.gd; voyage.gd,
+                             the autopilot
     scenes/hull/             hull.tscn: drawn rail (hairline + ruler ticks)
                              and column slots, dock(); sigil_block.tscn:
                              SigilBlock, a magic circle (no drawn name) with a
@@ -125,7 +127,8 @@ helper beside its executable and NERViewer through `Paths.find_up`, so
 the two repos only have to stay siblings.
 
 Keys: B desktop mode, Z zen, W fake wallpaper (windowed), S screenshot,
-Q quit, number keys the drive's gears (see Movement).
+Q quit, number keys the drive's gears: 1-5 states, 6-0 and -, = sequences (see
+Movement), backtick Voyage on or off, tilde its next movement.
 
 ## Movement
 
@@ -160,23 +163,78 @@ half the lean, far layer 0.15 in its rotated space). The set pieces share
 the vanishing point: the gate and tunnel converge on it, ether ribbons
 run from it outward in depth, ruins fly out in depth and grow.
 
-Two kinds of gear. A state holds until the next shift; a sequence runs
-its phases and settles into cruise by itself. Any shift leaves a
-sequence at once and its set piece dissolves over a second. Set pieces
-are drawn, in the tree's perspective, beneath the tree.
+Two kinds of gear, and the keyboard says which (layout decided
+2026-09-10 when the project was greenlit in full; fold and slingshot
+retired the same night on review, replaced, and two keys added): keys 1
+to 5 are states, which hold until the next shift; keys 6 to 0, then
+minus and equals, are sequences, which run their phases and settle by
+themselves, into cruise unless the row says otherwise (0 is gear 10,
+minus 11, equals 12). Any shift leaves a sequence at once and its set
+piece dissolves over a second. Set pieces are drawn, in the tree's
+perspective, beneath the tree.
 
 | Gear | Movement | Built |
 |---|---|---|
 | 1 | Idle (state): a starry vista, very slow drift, the engine off. | 2026-09-10 |
 | 2 | Cruise (state): clear parallax; opens up to 35% faster under a full core of workspace CPU. | 2026-09-10 |
-| 3 | Gate (sequence, gate.gd): Bebop's astral gate far ahead grows for 9 s at constant depth speed (slow, then a rush). The ring holds the portal: a disc of deep blue (frame toward ground) with a luminous rim inside the ring and a soft halo outside, translucent far off and opaque well before the pass, so at the pass the whole frame is its blue; the tree and hull stay drawn over it. Hyperspace 12 s at 420 px/s is washed in the same blue, easing from full to a 0.35 tint over 1.5 s: rings cycling from far to near with gold beacons and the walls' rays converging on the far end, rings fading in only once wider than the clear middle; 5 s of thinning, the wash fading with it; cruise. The pace governor is asked for 60 fps throughout. | 2026-09-10 |
-| 4 | Ether (state, ether.gd): Outlaw Star's currents. Ten seeded hairline ribbons running the length of the flight from near the bow out past the rim, each a slow wave (constant sway on screen) streaming past with the void, pale (one in three gold) packets running inward along them: the current carrying the ship. | 2026-09-10 |
-| 5 | Ruins (state, ruins.gd): Panzer Dragoon's ancient age. Eight wireframe fragments (arch, broken ring, lattice shard, obelisk, sigil shard) appear far ahead off the bow and fly out past the rim as the ship closes on them, growing as they come, tumbling slowly, a gold node where something still burns. | 2026-09-10 |
-| 6 | Warp (sequence, shader seam): Homeworld's plane of light. The drive stops over 4 s, a seam of pale light sweeps the frame along the heading over 3 s and the stars behind it are a new field (the shader hashes motes with a seed per side of the seam), the course is new (up to 45 degrees off), and the ship opens up to cruise over 3 s. The one movement that crosses the middle. | 2026-09-10 |
+| 3 | Ether (state, ether.gd): Outlaw Star's currents. Ten seeded hairline ribbons in the palette's cool color running the length of the flight from near the bow out past the rim. The current is continuous, never an object: a slow swell of light and the ribbon's own sway run inward toward the bow at one steady pace on screen (in 1/z, so nothing whips at the rim), the stream carrying the ship. Packets (dashes, some gold) were tried first and replaced the same day: a dash is a thing, a current is not, and gold is for what is live. | 2026-09-10 |
+| 4 | Nebula (state, in the shader): the pale clouds every 90s series flew through, Outlaw Star's Grave of the Dragon among them. Cloud density from three octaves of value noise on three depth slices flown through like the stars, drawn as a faint haze in the cool color with hairline contours where the density steps (a weather chart of the void), the densest cores warmed toward alarm, the stars dimmed inside the cloud; a slow drift at 22. Eases in and out over 1.5 s. Ruins (Panzer Dragoon fragments flying out in depth) held this slot earlier on 2026-09-10 and were retired the same day: Josh liked the idea but not the state. | 2026-09-10 |
+| 5 | Ring passage (state, in the shader + limb.gd): Cowboy Bebop's opening through Saturn's rings, Planetes' debris belts. The ship flies just above a flat plane of particles: a hairline horizon at the bow's height with a band of haze under it, and below it a jittered world grid (3-unit cells, a quarter filled) projected with a 900 px focal length from 12 units up, each particle streaking 0.15 s of motion toward the horizon; the plane runs 250 world units per unit of depth travelled, so it rushes under the ship at cruise. Thinner across the lower middle so the tree stays legible. The planet's limb, off the bow's high side: a dark disc that dims the stars, a hairline limb with bands of atmosphere inside and a haze line outside, still as a planet is. Speed 44. Eases in and out over 1.5 s. | 2026-09-10 |
+| 6 | Gate (sequence, gate.gd): Bebop's astral gate far ahead grows for 9 s at constant depth speed (slow, then a rush). The ring holds the portal: a disc of deep blue (frame toward ground) with a luminous rim inside the ring and a soft halo outside, translucent far off and opaque well before the pass, so at the pass the whole frame is its blue; the tree and hull stay drawn over it. Hyperspace 12 s at 420 px/s is washed in the same blue, easing from full to a 0.35 tint over 1.5 s: rings cycling from far to near with gold beacons and the walls' rays converging on the far end, rings fading in only once wider than the clear middle; 5 s of thinning, the wash fading with it; cruise. The pace governor is asked for 60 fps throughout. | 2026-09-10 |
+| 7 | Warp (sequence, shader seam + warp.gd): Homeworld's hyperspace, seen from the bow. The drive stops over 4 s while a point ahead is opened: a gold point brightens at the vanishing point and five hairline rings converge on it from the frame's edge, each starting a little after the last and closing tighter (warp.gd). Then the jump, 3 s: new space blooms out of the point, the seam a ring of pale light growing from the vanishing point past the farthest corner with the new star field inside it (the shader hashes motes with a seed per side of the seam, measured from the point), while the drive spikes to 2400 for 1.2 s so the stars stretch into radial streaks toward the point, then falls dead still in the new field. The course is new (up to 45 degrees off) and the ship opens up to cruise over 3 s. The one movement that crosses the middle. Reworked 2026-09-10 on review: the first cut's plane of light wiping across the frame read as a scan, with no visible cause and nothing that jumped. | 2026-09-10 |
+| 8 | Debris passage (sequence, debris.gd): Star Wars' asteroid field, Star Fox 64's Meteo, Outlaw Star's wrecks. Fragments come out of the vanishing point and stream past on every side: dark hairline polygons that hide the stars behind them, tumbling slowly, one lit facet each, a pool of 40 respawning far ahead as the phase's density allows, the middle kept clear. Over 5 s the first appear and the drive eases to 24; for 14 s the field is full and the bow weaves to thread it, a new lean of up to 25 degrees every 3 s or so, alternating sides, turning hard; over 5 s the field thins and the drive opens to cruise. Replaced the fold 2026-09-10 (the gate already had the portal). | 2026-09-10 |
+| 9 | Ether squall (sequence, in ether.gd): Outlaw Star's currents turned rough. The ribbons come in and over 6 s darken, thicken and sway three and a half times as far with a faster shiver riding the sway, the flow quickening; for 12 s they thrash, hairline discharges arc between neighboring ribbons (dim, a third of a second each, never a flash), the bow is shoved up to 20 degrees off course every 2 s or so and fights back, and the drive surges and sags around ether's 60; over 6 s it clears. Settles into ether (gear 3), not cruise: the squall passes and the ship is in calm current. Replaced the slingshot 2026-09-10 (retired on review: nobody could tell what it was). | 2026-09-10 |
+| 0 | Arrival (sequence, station.gd; key 0 is gear 10): Bebop's port approaches, the Nautilus coming home. A gold light on its own bearing, a little off course, resolves into a station over 7 s of sighting as the drive eases to 30; over 24 s of approach the bow bends onto the port's bearing and the drive eases to a crawl as the docking arm comes down to the bow; over 6 s of berth the ship stops dead and the port answers: the arm's five guide lights come up one by one, hub to cradle, then the cradle's pair. Structure: a hub with spokes, a turning dashed ring, an outer ring with dashes and four gold running lights, two long spars with windows, the arm and its cradle around the bow, kin to the hull's own instruments. Then the drive settles into idle, berthed: speed zero, the stars holding, no course corrections, the station ahead until the next shift. The only sequence that ends a voyage. Reworked 2026-09-10 on review: the first cut parked the station overhead with the stars still sliding. | 2026-09-10 |
+| - | Departure (sequence, station.gd; the minus key is gear 11): the mirror of arrival, and the only sequence with a condition: it fires from a berth only (idle, berthed) and the key does nothing otherwise, since anything else would invent a port we were never at. Over 6 s of cast-off the port's lights go down, the cradle's pair first, then the guides cradle to hub; over 8 s under way the drive opens to a crawl and the station grows and slides up out of the frame, passed beneath (Bebop's leaving-port shot); over 6 s the stars streak up to cruise. | 2026-09-10 |
+| = | The great ship (sequence, ship.gd; the equals key is gear 12): Bebop's colony liners, Yamato, Macross. A hull far bigger than ours overtakes from behind on a parallel course, below and to one side (chosen at random), so it enters from the corner close and huge, converging on the vanishing point as any parallel course must. Over 8 s its forward hull slides in; for 14 s it passes, gaining 0.3 depth a second, six deep, its stern clearing the frame's edge at the end; over 8 s it pulls ahead and dwindles into the point. A hairline silhouette in the tree's perspective: spine, keel and deck lines with ribs, a bridge tower, fins at the stern, windows on the breath, gold running lights bow and stern and on the tower, the engines' glow. Our course and speed never change; the middle is dimmed for it, not cut. The scale is the show. | 2026-09-10 |
+
+### Voyage
+
+Voyage is the autopilot (scenes/void/voyage.gd, a child of Void):
+with it on, the ship works the gearbox itself in the grammar the
+movements were built in, so the void travels all day with the keys
+untouched. Proposed by Josh 2026-09-10, built the same night.
+
+Backtick toggles it. Tilde ends the current movement now and lets Voyage
+choose the next. Any gear key takes the helm: Voyage ends and the gear
+runs; backtick resumes. Voyage does not survive a restart: boot is idle,
+drifting, whatever was on before.
+
+The grammar, with cruise as the spine:
+
+- A leg is a state held for 6, 9 or 12 minutes, chosen per leg: cruise
+  (weight 4), ether (3), nebula (2), ring (2), an idle drift (1). Never
+  the same state twice running.
+- Leaving a leg there is a 60 percent chance of a passage first: the
+  gate (3), warp (2), debris (3), the great ship (2), never the same one
+  twice running. Every passage lands in cruise, then the next leg.
+- An ether leg has a 50 percent chance of a squall, decided when the leg
+  begins and placed in its middle third. It clears back into ether and
+  the leg carries on.
+- After 45 to 90 minutes under way the next leg is a port call: arrival,
+  2 to 3 minutes berthed, departure, then the clock resets.
+- Course corrections from the frontmost app work as ever: Voyage steers
+  the gearbox, not the bow.
+
+Nothing is drawn for it. Every choice is printed with its reason
+(`voyage: leg, ether for 9 min, squall at 4:12`), so the log shows it
+think. If Voyage is switched on mid-sequence it waits for the settle;
+otherwise the first leg begins two seconds in.
 
 A change of frontmost app is a course correction: the bow leans up to
 22 degrees off the default course by an angle that is the app's own, so
 the same app always means the same course.
+
+Nothing in the shader may run on an accumulator it does not wrap
+exactly. Found 2026-09-10 as a frame cut in the nebula: the clouds ran
+on the stars' travel at 0.7 of its rate, so its wrap at 1.0 was not
+theirs, and every cloud slice jumped 0.3 in depth at once (the frame
+across the wrap differed 23 times more than an ordinary pair; after the
+fix, the same). The clouds now have their own travel. The same fix
+covered the engine's TIME, which rolls over hourly: every rhythm (the
+stars' twinkle, the nebula's drift) now runs on a clock Void wraps on a
+period they all divide (PULSE_BASE), and the ring plane wraps on a
+multiple of its cell.
 
 All six built 2026-09-10 under Josh's authorization of the full spec,
 then rebuilt as forward flight the same evening, checked by stills from a

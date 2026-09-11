@@ -1,4 +1,4 @@
-[gd_scene load_steps=9 format=3]
+[gd_scene load_steps=14 format=3]
 
 [ext_resource type="Shader" path="res://shaders/void.gdshader" id="1"]
 [ext_resource type="Script" path="res://scenes/void/void.gd" id="2"]
@@ -6,7 +6,12 @@
 [ext_resource type="Script" path="res://scenes/void/drive.gd" id="4"]
 [ext_resource type="Script" path="res://scenes/void/gate.gd" id="5"]
 [ext_resource type="Script" path="res://scenes/void/ether.gd" id="6"]
-[ext_resource type="Script" path="res://scenes/void/ruins.gd" id="7"]
+[ext_resource type="Script" path="res://scenes/void/limb.gd" id="7"]
+[ext_resource type="Script" path="res://scenes/void/debris.gd" id="8"]
+[ext_resource type="Script" path="res://scenes/void/station.gd" id="9"]
+[ext_resource type="Script" path="res://scenes/void/ship.gd" id="10"]
+[ext_resource type="Script" path="res://scenes/void/voyage.gd" id="11"]
+[ext_resource type="Script" path="res://scenes/void/warp.gd" id="12"]
 
 [sub_resource type="ShaderMaterial" id="mat"]
 shader = ExtResource("1")
@@ -25,14 +30,29 @@ script = ExtResource("2")
 [node name="Gate" type="Node2D" parent="."]
 script = ExtResource("5")
 
+[node name="Warp" type="Node2D" parent="."]
+script = ExtResource("12")
+
 [node name="Ether" type="Node2D" parent="."]
 script = ExtResource("6")
 
-[node name="Ruins" type="Node2D" parent="."]
+[node name="Limb" type="Node2D" parent="."]
 script = ExtResource("7")
+
+[node name="Debris" type="Node2D" parent="."]
+script = ExtResource("8")
+
+[node name="Station" type="Node2D" parent="."]
+script = ExtResource("9")
+
+[node name="Ship" type="Node2D" parent="."]
+script = ExtResource("10")
 
 [node name="Tree" type="Node2D" parent="."]
 script = ExtResource("3")
 
 [node name="Drive" type="Node" parent="."]
 script = ExtResource("4")
+
+[node name="Voyage" type="Node" parent="."]
+script = ExtResource("11")

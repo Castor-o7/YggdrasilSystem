@@ -19,7 +19,11 @@ uniform vec4 gold_color : source_color = vec4(0.949, 0.831, 0.541, 1.0);
 uniform float lattice_alpha : hint_range(0.0, 1.0) = 0.16;
 uniform float center_clear : hint_range(0.0, 1.0) = 0.12;
 uniform float breath : hint_range(0.0, 1.0) = 0.0;
-uniform float time_offset = 0.0;
+// The clock for every rhythm in here (the stars' twinkle, the nebula's
+// inner drift), fed by Void and wrapped on CLOCK_PERIOD, which every
+// rhythm divides exactly, so the wrap is invisible. The engine's TIME
+// rolls over hourly and would cut them all at once.
+uniform float clock = 0.0;
 // The fabric slides only when the bow swings: an offset per lattice
 // layer from the vanishing point's lean (far layer in its rotated space).
 uniform vec2 near_off = vec2(0.0);
@@ -30,16 +34,32 @@ uniform vec2 far_off = vec2(0.0);
 uniform vec2 vp = vec2(720.0, 450.0);
 uniform float travel = 0.0;
 uniform float blur = 0.0;
-// The bow's bearing, for the warp seam. On the far side of `sweep` (px
-// along the bearing from the frame's center) the star field is seed_b,
-// and a plane of pale light rides the seam. A very negative sweep is none.
+// The warp seam: within `sweep` px of the vanishing point the star field
+// is seed_b (the new space blooming out of the point), and a ring of pale
+// light rides the seam. A negative sweep is none.
 uniform vec2 heading = vec2(0.87, -0.48);
 uniform float seed_a = 0.0;
 uniform float seed_b = 0.0;
 uniform float sweep = -1.0e9;
 uniform float sweep_glow : hint_range(0.0, 1.0) = 0.0;
+// The nebula (gear 4): how far in we are, 0..1, eased by Void.
+uniform float nebula : hint_range(0.0, 1.0) = 0.0;
+uniform float cloud_travel = 0.0;   // the clouds' own depth travel, wraps each 1.0
+uniform vec4 cool_color : source_color = vec4(0.62, 0.94, 0.78, 1.0);
+uniform vec4 alarm_color : source_color = vec4(1.0, 0.48, 0.1, 1.0);
+// The ring plane (gear 5): how far in, the plane's travel (world units,
+// wrapped by Void) and the units crossed in one streak.
+uniform float ring : hint_range(0.0, 1.0) = 0.0;
+uniform float plane_travel = 0.0;
+uniform float plane_smear = 0.0;
 
+const float PULSE_BASE = 0.05;         // rad/s; CLOCK_PERIOD in Void is TAU / this
 const int LAYERS = 6;
+const int CLOUDS = 3;                  // nebula depth slices
+const float PLANE_F = 900.0;           // focal length for the ring plane, px
+const float PLANE_FH = 10800.0;        // focal length times the ship's height above the plane
+const float PLANE_CELL = 3.0;          // world units; Void wraps travel on a multiple
+const float PLANE_FAR = 400.0;         // depth beyond which the plane is only its horizon
 const float CELL = 150.0;
 const float Z_MIN = 0.08;
 const float STREAK_CAP = 0.9 * CELL;   // keeps a streak inside the 3x3 search
@@ -48,6 +68,29 @@ float hash21(vec2 p) {
 	p = fract(p * vec2(123.34, 456.21));
 	p += dot(p, p + 45.32);
 	return fract(p.x * p.y);
+}
+
+// Smooth value noise and three octaves of it, for the nebula.
+float vnoise(vec2 p) {
+	vec2 i = floor(p);
+	vec2 f = fract(p);
+	f = f * f * (3.0 - 2.0 * f);
+	float a = hash21(i);
+	float b = hash21(i + vec2(1.0, 0.0));
+	float c = hash21(i + vec2(0.0, 1.0));
+	float d = hash21(i + vec2(1.0, 1.0));
+	return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float fbm(vec2 p) {
+	float v = 0.0;
+	float a = 0.5;
+	for (int i = 0; i < 3; i++) {
+		v += a * vnoise(p);
+		p = p * 2.03 + vec2(17.1, 9.3);
+		a *= 0.5;
+	}
+	return v;
 }
 
 vec4 over(vec4 dst, vec4 src) {
@@ -116,7 +159,7 @@ void stars(vec2 p, vec2 origin, float depth, float smear, float t, float seed, o
 				float u = l2 > 0.0 ? clamp(dot(q - head, seg) / l2, 0.0, 1.0) : 0.0;
 				float d = length(q - (head + seg * u)) / z;
 				float dh = length(q - head) / z;
-				float pulse = 0.7 + 0.3 * sin(t * (0.18 + 0.25 * h) + h * 6.2831);
+				float pulse = 0.7 + 0.3 * sin(t * PULSE_BASE * (4.0 + floor(h * 6.0)) + h * 6.2831);
 				float k = pulse * (0.7 + 0.3 * breath) * fade * (0.3 + 0.7 * near);
 				float r = 0.7 + 1.0 * near;
 				float pn = (1.0 - smoothstep(r * 0.6, r + 0.9, d)) * k * (1.0 - 0.85 * u);
@@ -132,9 +175,57 @@ void stars(vec2 p, vec2 origin, float depth, float smear, float t, float seed, o
 	halo = clamp(halo, 0.0, 1.0);
 }
 
+// The ring plane: a flat field of particles below the bow's height. A
+// pixel dy below the horizon sees the plane at depth PLANE_FH / dy; its
+// world position is (x * depth / PLANE_F, depth + travel). Particles sit on a
+// jittered grid in that world and are projected back, each trailing a
+// streak toward where it was one smear ago (farther, so nearer the
+// horizon). Near the horizon the plane thins to haze and a line.
+void ring_plane(vec2 p, vec2 origin, float trav, float smear, out float pin, out float gold) {
+	pin = 0.0;
+	gold = 0.0;
+	float dy = p.y - origin.y;
+	if (dy <= 0.5) {
+		return;
+	}
+	float z = PLANE_FH / dy;
+	vec2 w = vec2((p.x - origin.x) * z / PLANE_F, z + trav);
+	vec2 id = floor(w / PLANE_CELL);
+	float depth_fade = smoothstep(PLANE_FAR, PLANE_FAR * 0.3, z);
+	for (int y = -1; y <= 1; y++) {
+		for (int x = -1; x <= 1; x++) {
+			vec2 n = id + vec2(float(x), float(y));
+			float h = hash21(n + 3.3);
+			if (h < 0.72) {
+				continue;
+			}
+			vec2 off = vec2(hash21(n + 5.1), hash21(n + 8.7));
+			vec2 hw = (n + off) * PLANE_CELL;
+			float zs = hw.y - trav;
+			if (zs < 0.05) {
+				continue;
+			}
+			vec2 head = origin + vec2(hw.x * PLANE_F / zs, PLANE_FH / zs);
+			float zt = zs + smear;
+			vec2 tail = origin + vec2(hw.x * PLANE_F / zt, PLANE_FH / zt);
+			vec2 seg = tail - head;
+			float l2 = dot(seg, seg);
+			float u = l2 > 0.0 ? clamp(dot(p - head, seg) / l2, 0.0, 1.0) : 0.0;
+			float d = length(p - (head + seg * u));
+			float near = clamp(30.0 / zs, 0.0, 1.0);
+			float r = 0.6 + 1.4 * near;
+			float k = depth_fade * (0.35 + 0.65 * near) * (0.75 + 0.25 * h);
+			float pn = (1.0 - smoothstep(r * 0.6, r + 0.9, d)) * k * (1.0 - 0.8 * u);
+			pin += pn;
+			gold = max(gold, step(0.94, h) * pn);
+		}
+	}
+	pin = clamp(pin, 0.0, 1.0);
+}
+
 void fragment() {
 	vec2 p = UV * res;
-	float t = TIME + time_offset;
+	float t = clock;
 	vec2 aspect = vec2(1.0, res.y / res.x);
 	vec2 c = (UV - 0.5) * aspect * 2.0;
 	// How far from the clear middle: 0 at center, 1 at the rim.
@@ -160,19 +251,63 @@ void fragment() {
 	dst = over(dst, vec4(line_color.rgb, l1 * lattice_alpha * mask * breathe));
 	dst = over(dst, vec4(light_color.rgb, n1 * lattice_alpha * 2.2 * mask * breathe));
 
+	// The nebula: cloud density on CLOUDS depth slices flown through like
+	// the stars, drawn as a faint haze in the cool color with hairline
+	// contours where the density steps, the densest cores warmed toward
+	// alarm. `cloud` is the density here, which dims the stars inside it.
+	float cloud = 0.0;
+	if (nebula > 0.001) {
+		float mask_n = mix(0.16, 1.0, max(rim, bottom));
+		for (int L = 0; L < CLOUDS; L++) {
+			float z = fract((float(L) + 0.5) / float(CLOUDS) - cloud_travel);
+			float fade = smoothstep(1.0, 0.75, z) * smoothstep(0.1, 0.3, z);
+			vec2 q = (p - vp) * z * 0.0035 + vec2(float(L) * 31.7, float(L) * 12.9) + vec2(sin(t * PULSE_BASE), cos(t * PULSE_BASE * 2.0)) * 0.3;
+			float v = fbm(q);
+			float dens = smoothstep(0.42, 0.78, v) * fade;
+			float core = smoothstep(0.64, 0.86, v);
+			vec3 tint = mix(cool_color.rgb, alarm_color.rgb, core * 0.55);
+			// Haze.
+			dst = over(dst, vec4(tint, dens * 0.11 * nebula * mask_n));
+			// Contours: hairlines on the density's steps, only inside the cloud.
+			float lv = v * 7.0;
+			float edge = abs(fract(lv) - 0.5);
+			float line = 1.0 - smoothstep(0.0, fwidth(lv) * 1.4, edge);
+			float inside = smoothstep(0.4, 0.55, v) * fade;
+			dst = over(dst, vec4(tint, line * inside * 0.28 * nebula * mask_n));
+			cloud += dens;
+		}
+		cloud = clamp(cloud, 0.0, 1.0) * nebula;
+	}
+
 	// The stars. A warp seam splits the field: the stars behind the plane are new.
-	float along = dot(p - res * 0.5, heading);
+	float along = length(p - vp);
 	float seed = along < sweep ? seed_b : seed_a;
 	float pin, halo, gold;
 	stars(p, vp, travel, blur, t, seed, pin, halo, gold);
 	vec3 star_rgb = mix(light_color.rgb, gold_color.rgb, gold);
 	float star_mask = mix(center_clear * 2.0, 1.0, max(rim, bottom));
-	dst = over(dst, vec4(star_rgb, halo * 0.5 * star_mask));
-	dst = over(dst, vec4(star_rgb, pin * 0.85 * star_mask));
+	float clear = 1.0 - 0.65 * cloud;
+	dst = over(dst, vec4(star_rgb, halo * 0.5 * star_mask * clear));
+	dst = over(dst, vec4(star_rgb, pin * 0.85 * star_mask * clear));
 
-	// The plane of light: a soft band on the seam, brightest at its core,
-	// crossing the whole frame (a cutscene, so the middle is not spared,
-	// only softened).
+	// The ring plane, over the stars (it is near), with its horizon: a
+	// hairline at the bow's height and a soft band of haze just below it.
+	if (ring > 0.001) {
+		float ppin, pgold;
+		ring_plane(p, vp, plane_travel, plane_smear, ppin, pgold);
+		float plane_mask = mix(0.18, 1.0, max(rim, bottom));
+		vec3 plane_rgb = mix(light_color.rgb, gold_color.rgb, pgold);
+		dst = over(dst, vec4(plane_rgb, ppin * 0.6 * ring * plane_mask));
+		float dyh = p.y - vp.y;
+		float hline = 1.0 - smoothstep(0.0, 1.3, abs(dyh));
+		float hz = exp(-abs(dyh) / 8.0) * step(0.0, dyh);
+		float hmask = mix(0.55, 1.0, max(rim, bottom));
+		dst = over(dst, vec4(light_color.rgb, (hz * 0.22 + hline * 0.45) * ring * hmask));
+	}
+
+	// The light on the seam: a soft band, brightest at its core, a ring
+	// growing out of the vanishing point past the frame (a cutscene, so
+	// the middle is not spared, only softened).
 	float band = exp(-abs(along - sweep) / 26.0);
 	float core = exp(-abs(along - sweep) / 3.0);
 	float seam_mask = mix(0.45, 1.0, max(rim, bottom));

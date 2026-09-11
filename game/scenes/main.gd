@@ -8,8 +8,13 @@ extends Node2D
 ## when the mouse touches their edge), W toggles a fake wallpaper behind
 ## the void (windowed only, for judging the overlay look without leaving
 ## the app), S saves a screenshot beside the project, Q or Escape quits.
-## The number keys are the drive's gears (1 idle, 2 cruise, 3 gate,
-## 4 ether, 5 ruins, 6 warp; see scenes/void/drive.gd). Mode, zen and wallpaper persist, the gear does
+## The number keys are the drive's gears: 1 to 5 states (idle, cruise,
+## ether, nebula, ring), 6 to 0 sequences (gate, warp, debris, squall,
+## arrival; 0 is gear 10), then minus for departure (11, from a berth
+## only) and equals for the great ship (12). Backtick toggles Voyage,
+## the autopilot (scenes/void/voyage.gd); tilde skips to its next
+## movement; a gear key takes the helm back. See
+## scenes/void/drive.gd. Mode, zen and wallpaper persist, the gear does
 ## not; zen restores the system's own settings when it ends or the
 ## cockpit quits.
 
@@ -288,6 +293,12 @@ func _process(dt: float) -> void:
 			win.size = usable.size
 
 
+## A gear key: the pilot has the helm, so Voyage ends and the gear runs.
+func _helm(gear: int) -> void:
+	void_layer.voyage.stop()
+	void_layer.drive.shift(gear)
+
+
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event.is_pressed() or event.is_echo():
 		return
@@ -305,7 +316,18 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				_nerviewer_dock.release()
 			get_tree().quit()
 		KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9:
-			void_layer.drive.shift(event.keycode - KEY_0)
+			_helm(event.keycode - KEY_0)
+		KEY_0:
+			_helm(10)
+		KEY_MINUS:
+			_helm(11)
+		KEY_EQUAL:
+			_helm(12)
+		KEY_QUOTELEFT, KEY_ASCIITILDE:
+			if event.shift_pressed or event.keycode == KEY_ASCIITILDE:
+				void_layer.voyage.skip()
+			else:
+				void_layer.voyage.toggle()
 		KEY_S:
 			# Note: over the desktop this captures only what the app draws,
 			# on transparent; the desktop behind it is not in the frame.
