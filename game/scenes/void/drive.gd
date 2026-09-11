@@ -43,7 +43,7 @@ const SHIP := 12
 ## Per gear: the name and the motes' speed at rest.
 const GEARS := {
 	IDLE: {"name": "idle", "speed": 2.5},
-	CRUISE: {"name": "cruise", "speed": 36.0},
+	CRUISE: {"name": "cruise", "speed": 48.0},
 	ETHER: {"name": "ether", "speed": 60.0},
 	NEBULA: {"name": "nebula", "speed": 22.0},
 	RING: {"name": "ring", "speed": 44.0},
@@ -137,6 +137,11 @@ const WARP_LEAN := deg_to_rad(45.0)
 ## Cruise opens up to this much faster under a full core of workspace CPU.
 ## Idle has the engine off and ignores the workspace.
 const CRUISE_THROTTLE := 0.35
+## The engine catching: opening from idle, the drive overshoots cruise by
+## this much for CATCH seconds, then settles. Inertia, so pressing 2 is
+## a moment (Trev's playtest, 2026-09-10).
+const CATCH_OVERSHOOT := 1.8
+const CATCH := 1.5
 
 var gear := IDLE
 var speed: float = GEARS[IDLE]["speed"]
@@ -157,6 +162,7 @@ var berthed := false
 var berth_course := COURSE
 
 var _course := COURSE
+var _catch := 0.0              # seconds of overshoot left
 var _target_speed: float = GEARS[IDLE]["speed"]
 var _rate := THROTTLE_RATE
 var _turn := TURN_RATE
@@ -181,6 +187,7 @@ func shift(to: int) -> bool:
 		return false
 	if to == DEPART and not (gear == IDLE and berthed):
 		return false
+	_catch = CATCH if to == CRUISE and gear == IDLE else 0.0
 	gear = to
 	phase_t = 0.0
 	berthed = false
@@ -246,6 +253,10 @@ func _process(dt: float) -> void:
 	match gear:
 		CRUISE:
 			_target_speed = GEARS[CRUISE]["speed"] * (1.0 + CRUISE_THROTTLE * _load)
+			if _catch > 0.0:
+				_catch -= dt
+				_target_speed *= CATCH_OVERSHOOT
+				_rate = THROTTLE_HARD
 		GATE:
 			_advance_gate(dt)
 		WARP:

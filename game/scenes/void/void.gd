@@ -12,8 +12,9 @@ extends ColorRect
 ## Depth per second per px/s of drive speed: at cruise (36) a star crosses
 ## from far to near in about 25 s; in hyperspace (420) in about two.
 const SPEED_SCALE := 900.0
-## Mote streaks are this much travel long.
-const STREAK_TIME := 0.4
+## Star trails are this much travel long (doubled 2026-09-10 so cruise
+## wears its speed).
+const STREAK_TIME := 0.8
 ## The bow's bearing places the vanishing point on an arc this far from
 ## the frame's center.
 const VP_RADIUS := 120.0
@@ -61,10 +62,23 @@ func _ready() -> void:
 	_mat.set_shader_parameter("cool_color", Palette.color("cool"))
 	_mat.set_shader_parameter("alarm_color", Palette.color("alarm"))
 	resized.connect(_on_resized)
+	# Main is a Node2D, so this rect's full-frame anchors have nothing to
+	# bind to and it would stay at its saved 1440x900. Follow the viewport
+	# instead, as the hull does; over the desktop with the Dock and menu
+	# bar showing the frame is wider than 16:10, and the void stopped 136
+	# design px short of the right edge (found by Josh 2026-09-11).
+	get_viewport().size_changed.connect(_fit)
+	_fit()
 	_on_resized()
 	# A still rendered at a later moment (the shots tool) has drifted that
 	# long at idle.
 	_travel(time_offset)
+
+
+func _fit() -> void:
+	var s := get_viewport_rect().size
+	if size != s:
+		size = s
 
 
 func _on_resized() -> void:

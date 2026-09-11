@@ -23,6 +23,12 @@ the working title MagitechDesk is retired (project name, bundle id
 ## Frame
 
 1440x900 design space, scaled to cover the usable screen in desktop mode.
+The window stretches in canvas_items/expand, so a screen wider than
+16:10 (the Dock and menu bar showing, zen off) widens the frame past
+1440. Main is a Node2D, so the void's anchors bind to nothing; it
+follows the viewport by hand (void.gd `_fit`), as the hull does. Until
+2026-09-11 it stayed 1440 wide and stopped 136 design px short of the
+right edge over the desktop; Josh caught it.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -156,7 +162,13 @@ the shader the vanishing point, depth travelled and a streak length in
 depth. The shader's stars are six depth slices cycling from far to near,
 each a jittered grid on the far plane projected through the vanishing
 point: stars are born dim near the bow and run outward, near ones fast
-and far ones slow, each trailing a streak toward where it was 0.4 s ago.
+and far ones slow, each trailing a streak toward where it was 0.8 s ago,
+the head a round bead and the tail thinning to a point, keeping its
+light until near the tip (0.4 s and a fading trail until Trev's playtest,
+2026-09-10: cruise did not read as faster than
+idle; the frame-change measure was 0.38 idle against 0.40 cruise, and is
+0.38 against 0.50 now; Josh's note after: not uniform lines, so the
+bead and the taper).
 Parallax lives inside the field. The lattice is the far fabric: still at
 constant heading, and it slides only when the bow swings (near layer
 half the lean, far layer 0.15 in its rotated space). The set pieces share
@@ -176,7 +188,7 @@ perspective, beneath the tree.
 | Gear | Movement | Built |
 |---|---|---|
 | 1 | Idle (state): a starry vista, very slow drift, the engine off. | 2026-09-10 |
-| 2 | Cruise (state): clear parallax; opens up to 35% faster under a full core of workspace CPU. | 2026-09-10 |
+| 2 | Cruise (state): clear parallax, speed 48 (36 until 2026-09-10), the stars trailing; opens up to 35% faster under a full core of workspace CPU. Opening from idle the engine catches: the drive lurches to 1.8 times cruise for 1.5 s, hard, then settles (1.4 for 2 s at first; Josh wanted a proper lurch), so pressing 2 is a moment. | 2026-09-10 |
 | 3 | Ether (state, ether.gd): Outlaw Star's currents. Ten seeded hairline ribbons in the palette's cool color running the length of the flight from near the bow out past the rim. The current is continuous, never an object: a slow swell of light and the ribbon's own sway run inward toward the bow at one steady pace on screen (in 1/z, so nothing whips at the rim), the stream carrying the ship. Packets (dashes, some gold) were tried first and replaced the same day: a dash is a thing, a current is not, and gold is for what is live. | 2026-09-10 |
 | 4 | Nebula (state, in the shader): the pale clouds every 90s series flew through, Outlaw Star's Grave of the Dragon among them. Cloud density from three octaves of value noise on three depth slices flown through like the stars, drawn as a faint haze in the cool color with hairline contours where the density steps (a weather chart of the void), the densest cores warmed toward alarm, the stars dimmed inside the cloud; a slow drift at 22. Eases in and out over 1.5 s. Ruins (Panzer Dragoon fragments flying out in depth) held this slot earlier on 2026-09-10 and were retired the same day: Josh liked the idea but not the state. | 2026-09-10 |
 | 5 | Ring passage (state, in the shader + limb.gd): Cowboy Bebop's opening through Saturn's rings, Planetes' debris belts. The ship flies just above a flat plane of particles: a hairline horizon at the bow's height with a band of haze under it, and below it a jittered world grid (3-unit cells, a quarter filled) projected with a 900 px focal length from 12 units up, each particle streaking 0.15 s of motion toward the horizon; the plane runs 250 world units per unit of depth travelled, so it rushes under the ship at cruise. Thinner across the lower middle so the tree stays legible. The planet's limb, off the bow's high side: a dark disc that dims the stars, a hairline limb with bands of atmosphere inside and a haze line outside, still as a planet is. Speed 44. Eases in and out over 1.5 s. | 2026-09-10 |
@@ -238,9 +250,12 @@ multiple of its cell.
 
 All six built 2026-09-10 under Josh's authorization of the full spec,
 then rebuilt as forward flight the same evening, checked by stills from a
-gear-walking probe; judged by eye in the running cockpit next. Idle-cost
-bench not yet re-run: the starfield is six slices of nine hashes per
-pixel where the motes were one of nine.
+gear-walking probe, then judged by eye by Josh and reviewed; the review
+rework (arrival, warp, the retired gears, the added keys) and Voyage
+followed the same night. Idle-cost re-bench 2026-09-10 with the full
+void (starfield, nebula, ring plane, seam): 24.6% windowed, 24.7% over
+the desktop, both holding 30 fps; the same as before the starfield, so
+the desktop app was rebuilt that night.
 
 ## Zen
 
@@ -284,6 +299,9 @@ used over 20 s):
 | 12 | 11% | | |
 | 30 | 21% | 22% | 22% |
 | 60 | 37% | | |
+
+Re-measured 2026-09-10 with the full void (starfield, nebula, ring
+plane, warp seam) at 30: 24.6% windowed, 24.7% over the desktop.
 
 Linear in the frame rate, indifferent to the renderer, so Forward+ stays. Over the desktop (the screen-sized,
 always-on-top window) the same frame costs about the same: 24% desktop,
@@ -345,7 +363,7 @@ cockpit runs at 60 fps in zen for the same reason.
    `../NERViewer/dist/NERViewer.app` once. Godot on macOS measures
    windows in pixels, so both apps share one coordinate system.
 3b. More instruments.
-3c. Movement: the drive and its six gears (see Movement). Built
-   2026-09-10; awaiting Josh's judgment by eye and a re-bench.
+3c. Movement: the drive, its twelve gears and Voyage (see Movement).
+   Built, reviewed, re-benched and shipped to the desktop 2026-09-10.
 4. Bugs (rabbits on the failing block), garage mode (drag blocks
    between slots), warp transition.

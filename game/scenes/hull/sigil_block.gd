@@ -13,10 +13,12 @@ const INSCRIPTION_HEIGHT := 9.0
 
 ## Rings, outermost first: radius inset from the edge, angular speed
 ## (radians per second; sign is chirality), and what the ring carries.
+## Speeds are two thirds of the first cut (Josh, 2026-09-10: a third
+## slower).
 const RINGS := [
-	{"inset": 6.0, "speed": 0.05, "kind": "glyphs"},
-	{"inset": 24.0, "speed": -0.08, "kind": "inscription"},
-	{"inset": 38.0, "speed": 0.14, "kind": "arcs"},
+	{"inset": 6.0, "speed": 0.0333, "kind": "glyphs"},
+	{"inset": 24.0, "speed": -0.0533, "kind": "inscription"},
+	{"inset": 38.0, "speed": 0.0933, "kind": "arcs"},
 ]
 const INNER_INSET := 46.0
 

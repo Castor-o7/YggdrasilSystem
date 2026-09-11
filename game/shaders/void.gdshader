@@ -161,8 +161,15 @@ void stars(vec2 p, vec2 origin, float depth, float smear, float t, float seed, o
 				float dh = length(q - head) / z;
 				float pulse = 0.7 + 0.3 * sin(t * PULSE_BASE * (4.0 + floor(h * 6.0)) + h * 6.2831);
 				float k = pulse * (0.7 + 0.3 * breath) * fade * (0.3 + 0.7 * near);
-				float r = 0.7 + 1.0 * near;
-				float pn = (1.0 - smoothstep(r * 0.6, r + 0.9, d)) * k * (1.0 - 0.85 * u);
+				// A star with a tail, not a line: the head is a round bead,
+				// the tail thins to a point and keeps its light until near
+				// the tip (Trev's note, 2026-09-10: cruise did not read as
+				// faster than idle; Josh's, the same night: not lines).
+				float r0 = 0.7 + 1.0 * near;
+				float r = r0 * (1.0 - 0.55 * u);
+				float tail = 1.0 - 0.7 * u * u;
+				float pn = (1.0 - smoothstep(r * 0.6, r + 0.9, d)) * k * tail;
+				pn += (1.0 - smoothstep(0.0, r0 * 1.4, dh)) * k * 0.6;
 				float hl = (1.0 - smoothstep(0.0, 6.0 + 10.0 * near, dh)) * 0.3 * k;
 				float g = step(0.92, h);
 				pin += pn;
