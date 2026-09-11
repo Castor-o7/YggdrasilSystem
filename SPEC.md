@@ -99,6 +99,8 @@ YggdrasilSystem/
     shaders/void.gdshader    lattice x2, nodes, motes, radial/bottom mask
     scenes/main.tscn/.gd     window modes, prefs, passthrough, keys
     scenes/void/             void.tscn: the shader quad + tree.gd (live)
+                             + drive.gd (the gearbox of movements) and its
+                             set pieces gate.gd, ether.gd, ruins.gd
     scenes/hull/             hull.tscn: drawn rail (hairline + ruler ticks)
                              and column slots, dock(); sigil_block.tscn:
                              SigilBlock, a magic circle (no drawn name) with a
@@ -123,7 +125,64 @@ helper beside its executable and NERViewer through `Paths.find_up`, so
 the two repos only have to stay siblings.
 
 Keys: B desktop mode, Z zen, W fake wallpaper (windowed), S screenshot,
-Q quit.
+Q quit, number keys the drive's gears (see Movement).
+
+## Movement
+
+Decided 2026-09-10. The Suite is a game whose loop is using the computer,
+and what the void lacked was travel: three layers crawling along one
+diagonal at nearly the same rate, so no parallax, a periodic lattice the
+eye cannot track, and no heading or cause. The 90s cockpits (Bebop's
+gates, Outlaw Star's ether, Tenchi's tree-ships, Panzer Dragoon's ruins,
+Homeworld's streaks) all keep the hull still and move a mid-ground past
+it at a speed the background does not share.
+
+Movement is an interactive cutscene the pilot shifts into: `Drive`
+(scenes/void/drive.gd, a child of Void) is a gearbox on the number keys.
+Boot is always gear 1; the gear is never saved. Nothing cuts: speed opens
+like a throttle (half a second's worth per second; hyperspace and the
+warp's stop harder) and the bow swings with inertia.
+
+**Forward flight** (2026-09-10, on Josh's note that stars sliding
+diagonally made no sense for a ship moving ahead; reference: the
+Starfield screensaver). The drive's heading is the bow's bearing: it
+places the vanishing point on an arc 120 px around the frame's center.
+`Void` turns speed into depth per second (`SPEED_SCALE` 900: at cruise a
+star crosses far to near in about 25 s, in hyperspace in two) and hands
+the shader the vanishing point, depth travelled and a streak length in
+depth. The shader's stars are six depth slices cycling from far to near,
+each a jittered grid on the far plane projected through the vanishing
+point: stars are born dim near the bow and run outward, near ones fast
+and far ones slow, each trailing a streak toward where it was 0.4 s ago.
+Parallax lives inside the field. The lattice is the far fabric: still at
+constant heading, and it slides only when the bow swings (near layer
+half the lean, far layer 0.15 in its rotated space). The set pieces share
+the vanishing point: the gate and tunnel converge on it, ether ribbons
+run from it outward in depth, ruins fly out in depth and grow.
+
+Two kinds of gear. A state holds until the next shift; a sequence runs
+its phases and settles into cruise by itself. Any shift leaves a
+sequence at once and its set piece dissolves over a second. Set pieces
+are drawn, in the tree's perspective, beneath the tree.
+
+| Gear | Movement | Built |
+|---|---|---|
+| 1 | Idle (state): a starry vista, very slow drift, the engine off. | 2026-09-10 |
+| 2 | Cruise (state): clear parallax; opens up to 35% faster under a full core of workspace CPU. | 2026-09-10 |
+| 3 | Gate (sequence, gate.gd): Bebop's astral gate far ahead grows for 9 s at constant depth speed (slow, then a rush). The ring holds the portal: a disc of deep blue (frame toward ground) with a luminous rim inside the ring and a soft halo outside, translucent far off and opaque well before the pass, so at the pass the whole frame is its blue; the tree and hull stay drawn over it. Hyperspace 12 s at 420 px/s is washed in the same blue, easing from full to a 0.35 tint over 1.5 s: rings cycling from far to near with gold beacons and the walls' rays converging on the far end, rings fading in only once wider than the clear middle; 5 s of thinning, the wash fading with it; cruise. The pace governor is asked for 60 fps throughout. | 2026-09-10 |
+| 4 | Ether (state, ether.gd): Outlaw Star's currents. Ten seeded hairline ribbons running the length of the flight from near the bow out past the rim, each a slow wave (constant sway on screen) streaming past with the void, pale (one in three gold) packets running inward along them: the current carrying the ship. | 2026-09-10 |
+| 5 | Ruins (state, ruins.gd): Panzer Dragoon's ancient age. Eight wireframe fragments (arch, broken ring, lattice shard, obelisk, sigil shard) appear far ahead off the bow and fly out past the rim as the ship closes on them, growing as they come, tumbling slowly, a gold node where something still burns. | 2026-09-10 |
+| 6 | Warp (sequence, shader seam): Homeworld's plane of light. The drive stops over 4 s, a seam of pale light sweeps the frame along the heading over 3 s and the stars behind it are a new field (the shader hashes motes with a seed per side of the seam), the course is new (up to 45 degrees off), and the ship opens up to cruise over 3 s. The one movement that crosses the middle. | 2026-09-10 |
+
+A change of frontmost app is a course correction: the bow leans up to
+22 degrees off the default course by an angle that is the app's own, so
+the same app always means the same course.
+
+All six built 2026-09-10 under Josh's authorization of the full spec,
+then rebuilt as forward flight the same evening, checked by stills from a
+gear-walking probe; judged by eye in the running cockpit next. Idle-cost
+bench not yet re-run: the starfield is six slices of nine hashes per
+pixel where the motes were one of nine.
 
 ## Zen
 
@@ -228,5 +287,7 @@ cockpit runs at 60 fps in zen for the same reason.
    `../NERViewer/dist/NERViewer.app` once. Godot on macOS measures
    windows in pixels, so both apps share one coordinate system.
 3b. More instruments.
+3c. Movement: the drive and its six gears (see Movement). Built
+   2026-09-10; awaiting Josh's judgment by eye and a re-bench.
 4. Bugs (rabbits on the failing block), garage mode (drag blocks
    between slots), warp transition.

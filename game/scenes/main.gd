@@ -8,8 +8,10 @@ extends Node2D
 ## when the mouse touches their edge), W toggles a fake wallpaper behind
 ## the void (windowed only, for judging the overlay look without leaving
 ## the app), S saves a screenshot beside the project, Q or Escape quits.
-## Mode, zen and wallpaper persist; zen restores the system's own
-## settings when it ends or the cockpit quits.
+## The number keys are the drive's gears (1 idle, 2 cruise, 3 gate,
+## 4 ether, 5 ruins, 6 warp; see scenes/void/drive.gd). Mode, zen and wallpaper persist, the gear does
+## not; zen restores the system's own settings when it ends or the
+## cockpit quits.
 
 const PREFS := "user://prefs.cfg"
 const DESIGN := Vector2i(1440, 900)
@@ -302,6 +304,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			if _nerviewer_dock:
 				_nerviewer_dock.release()
 			get_tree().quit()
+		KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9:
+			void_layer.drive.shift(event.keycode - KEY_0)
 		KEY_S:
 			# Note: over the desktop this captures only what the app draws,
 			# on transparent; the desktop behind it is not in the frame.
