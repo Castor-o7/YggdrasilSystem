@@ -97,7 +97,7 @@ YggdrasilSystem/
     terminal_zen_profile.*   builds and imports the "Yggdrasil" Terminal profile
   dist/                      built app (gitignored)
   game/
-    project.godot            4.3, Forward+, transparent, canvas_items/expand,
+    project.godot            4.7, Forward+, transparent, canvas_items/expand,
                              theme font fonts/ui.tres
     export_presets.cfg       macOS preset for tools/build_app.sh; carries the
                              NSAppleEventsUsageDescription zen needs
