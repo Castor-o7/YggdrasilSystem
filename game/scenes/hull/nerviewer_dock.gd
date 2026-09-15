@@ -20,12 +20,19 @@ const LAUNCH_GRACE := 5.0
 ## never end in two copies. Without one, open the app.
 const AGENT := "edu.pdx.josh.nerviewer"
 const POLL := 0.5
+## Stowed with the HUD: NERViewer is hidden as an app (what Cmd-H does)
+## through System Events, and shown again when the HUD returns or the
+## cockpit quits. Applied once it is running, so a boot with the HUD
+## stowed hides it as soon as it comes up.
+const HIDE := 'tell application "System Events" to set visible of (first process whose bundle identifier is "%s") to %s'
 
 var block: SigilBlock
 var _timer := 0.0
 var _last_rect := Rect2i()
 var _launched := false
 var _dock_path := ""
+var _want_hidden := false
+var _hidden := false
 
 
 func _ready() -> void:
@@ -40,6 +47,9 @@ func _process(dt: float) -> void:
 		return
 	_timer = POLL
 	block.bare = running()
+	if running() and _hidden != _want_hidden:
+		_hidden = _want_hidden
+		Osa.fire(HIDE % [BUNDLE_ID, "true" if _hidden else "false"])
 	var rect := _screen_rect()
 	if rect != _last_rect:
 		_last_rect = rect
@@ -101,7 +111,14 @@ static func _uid() -> int:
 	return int(str(out[0]).strip_edges()) if not out.is_empty() else 501
 
 
+func set_hidden(on: bool) -> void:
+	_want_hidden = on
+
+
 func release() -> void:
+	if _hidden:
+		_hidden = false
+		Osa.fire(HIDE % [BUNDLE_ID, "false"])
 	if _dock_path != "" and FileAccess.file_exists(_dock_path):
 		DirAccess.remove_absolute(_dock_path)
 

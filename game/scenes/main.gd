@@ -8,14 +8,16 @@ extends Node2D
 ## when the mouse touches their edge), W toggles a fake wallpaper behind
 ## the void (windowed only, for judging the overlay look without leaving
 ## the app), S saves a screenshot beside the project, Q or Escape quits.
+## H stows the HUD (the hull, its instruments, NERViewer with them) while
+## the void flies on; T stows the tree. Both persist.
 ## The number keys are the drive's gears: 1 to 5 states (idle, cruise,
 ## ether, nebula, ring), 6 to 0 sequences (gate, warp, debris, squall,
 ## arrival; 0 is gear 10), then minus for departure (11, from a berth
 ## only) and equals for the great ship (12). Backtick toggles Voyage,
 ## the autopilot (scenes/void/voyage.gd); tilde skips to its next
 ## movement; a gear key takes the helm back. See
-## scenes/void/drive.gd. Mode, zen and wallpaper persist, the gear does
-## not; zen restores the system's own settings when it ends or the
+## scenes/void/drive.gd. Mode, zen, wallpaper, HUD and tree persist, the
+## gear does not; zen restores the system's own settings when it ends or the
 ## cockpit quits.
 
 const PREFS := "user://prefs.cfg"
@@ -26,6 +28,7 @@ const DESIGN := Vector2i(1440, 900)
 @onready var hull: Control = $Hull
 @onready var frames: Node2D = $Frames
 @onready var cover: Node2D = $Cover
+@onready var tree: Node2D = $Void/Tree
 
 const BLOCK := preload("res://scenes/hull/sigil_block.tscn")
 const CLOCK := preload("res://scenes/blocks/clock.tscn")
@@ -37,6 +40,15 @@ var _nerviewer_dock: Node
 var desktop := false
 var fake_wallpaper := false
 var zen := false
+## The HUD (the hull and its instruments, NERViewer among them) and the
+## tree can be stowed while the void flies on (Josh, 2026-09-11: still
+## floating through the void while reading email, the cockpit put away
+## until it is wanted).
+var hud := true
+var tree_shown := true
+const STOW := 0.8               # seconds to fade either away or back
+var _hud_alpha := 1.0
+var _tree_alpha := 1.0
 ## The Dock and menu-bar auto-hide settings as they were before zen, so
 ## zen can hand them back exactly.
 var _zen_prev := [false, false]
@@ -48,6 +60,7 @@ var persist := true
 func _ready() -> void:
 	get_window().size_changed.connect(_update_passthrough)
 	Workspace.windows_moved.connect(_on_windows_moved)
+	hull.laid_out.connect(_update_passthrough)
 	_load_prefs()
 	_apply_wallpaper()
 	_dock_blocks()
@@ -79,6 +92,7 @@ func _dock_blocks() -> void:
 		return  # the shots tool must not launch or dock the real NERViewer
 	_nerviewer_dock = NERVIEWER_DOCK.new()
 	_nerviewer_dock.block = nerv
+	_nerviewer_dock.set_hidden(not hud)
 	add_child(_nerviewer_dock)
 	Workspace.changed.connect(func() -> void: waiting.visible = not _nerviewer_dock.running())
 
@@ -196,6 +210,19 @@ func _release_zen() -> void:
 			Osa.fire(TERM_SET % [_term_prev, _term_prev, _term_prev])
 
 
+func set_hud(on: bool) -> void:
+	hud = on
+	if _nerviewer_dock:
+		_nerviewer_dock.set_hidden(not on)
+	_update_passthrough()
+	_save_prefs()
+
+
+func set_tree(on: bool) -> void:
+	tree_shown = on
+	_save_prefs()
+
+
 func set_fake_wallpaper(on: bool) -> void:
 	fake_wallpaper = on
 	_apply_wallpaper()
@@ -210,12 +237,19 @@ func _apply_wallpaper() -> void:
 		void_layer.set_ground_alpha(1.0)
 
 
-## Where clicks land: the rail, and each side column only as far down as
-## its instruments reach, joined into one shape by a one-pixel strip along
-## the screen edge. Everything else passes through to the desktop, so a
-## window under the empty part of a column is still the desktop's. Godot
-## treats an empty polygon as "capture everything", which is what windowed
-## mode wants. Window pixels throughout.
+## Where clicks land: each instrument's disc and a thin strip under the
+## rail's hairline (somewhere to click so the keys reach the cockpit).
+## Everything else passes through to the desktop. Until 2026-09-11 the
+## shape was the whole rail band and each column down to its instruments:
+## the top-left column sat over the traffic lights of most windows and
+## the band over their bottom edges (Josh: could not minimize them). With
+## the HUD stowed only the strip remains. Godot treats an empty polygon
+## as "capture everything", which is what windowed mode wants. Window
+## pixels throughout.
+const RAIL_STRIP := 16.0        # design px under the hairline
+const DISC_SIDES := 24
+
+
 func _update_passthrough() -> void:
 	var win := get_window()
 	if not desktop:
@@ -223,17 +257,33 @@ func _update_passthrough() -> void:
 		return
 	var s := Vector2(win.size)
 	var k: float = get_viewport().get_final_transform().get_scale().y
-	var side: float = s.x * hull.SIDE
 	var rail_top: float = s.y * (1.0 - hull.RAIL)
-	var left := minf(k * hull.arm_bottom("left"), rail_top)
-	var right := minf(k * hull.arm_bottom("right"), rail_top)
-	var e := 1.0
-	win.mouse_passthrough_polygon = PackedVector2Array([
-		Vector2(0, 0), Vector2(side, 0), Vector2(side, left), Vector2(e, left),
-		Vector2(e, rail_top), Vector2(s.x - e, rail_top), Vector2(s.x - e, right),
-		Vector2(s.x - side, right), Vector2(s.x - side, 0), Vector2(s.x, 0),
-		Vector2(s.x, s.y), Vector2(0, s.y),
-	])
+	var rail_low: float = rail_top + k * RAIL_STRIP
+	var loops: Array = [[Vector2(0, rail_top), Vector2(s.x, rail_top), Vector2(s.x, rail_low), Vector2(0, rail_low)]]
+	if hud:
+		for disc in hull.discs():
+			var c: Vector2 = disc[0] * k
+			var r: float = disc[1] * k
+			var loop := []
+			for i in DISC_SIDES:
+				loop.append(c + Vector2.from_angle(TAU * i / DISC_SIDES) * r)
+			loops.append(loop)
+	win.mouse_passthrough_polygon = _one_polygon(loops)
+
+
+## One polygon from several closed loops: each loop is reached from the
+## first loop's first point along a bridge and left the same way, so the
+## bridges have no area and the even-odd ray test macOS is given
+## (Geometry2D.is_point_in_polygon) cancels them out.
+static func _one_polygon(loops: Array) -> PackedVector2Array:
+	var pts := PackedVector2Array()
+	var home: Vector2 = loops[0][0]
+	for loop in loops:
+		pts.append(home)
+		for p in loop:
+			pts.append(p)
+		pts.append(loop[0])
+	return pts
 
 
 func _load_prefs() -> void:
@@ -245,6 +295,10 @@ func _load_prefs() -> void:
 	# Read everything before applying anything: set_desktop() saves the
 	# prefs, and it must not save zen back as off before zen is read.
 	fake_wallpaper = bool(cfg.get_value("look", "wallpaper", false))
+	hud = bool(cfg.get_value("look", "hud", true))
+	tree_shown = bool(cfg.get_value("look", "tree", true))
+	_hud_alpha = 1.0 if hud else 0.0
+	_tree_alpha = 1.0 if tree_shown else 0.0
 	var want_desktop := bool(cfg.get_value("look", "desktop", false))
 	_zen_prev = [bool(cfg.get_value("zen", "prev_dock", false)), bool(cfg.get_value("zen", "prev_menu", false))]
 	_remember_terminal(str(cfg.get_value("zen", "prev_terminal", "")))
@@ -265,6 +319,8 @@ func _save_prefs() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("look", "desktop", desktop)
 	cfg.set_value("look", "wallpaper", fake_wallpaper)
+	cfg.set_value("look", "hud", hud)
+	cfg.set_value("look", "tree", tree_shown)
 	cfg.set_value("zen", "on", zen)
 	cfg.set_value("zen", "prev_dock", _zen_prev[0])
 	cfg.set_value("zen", "prev_menu", _zen_prev[1])
@@ -281,6 +337,12 @@ func _notification(what: int) -> void:
 
 
 func _process(dt: float) -> void:
+	_hud_alpha = move_toward(_hud_alpha, 1.0 if hud else 0.0, dt / STOW)
+	hull.modulate.a = _hud_alpha
+	hull.visible = _hud_alpha > 0.0
+	_tree_alpha = move_toward(_tree_alpha, 1.0 if tree_shown else 0.0, dt / STOW)
+	tree.modulate.a = _tree_alpha
+	tree.visible = _tree_alpha > 0.0
 	# The usable screen changes when the menu bar hides or the display
 	# changes; over the desktop, keep covering all of it.
 	_screen_timer -= dt
@@ -309,6 +371,10 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			set_fake_wallpaper(not fake_wallpaper)
 		KEY_Z:
 			set_zen(not zen)
+		KEY_H:
+			set_hud(not hud)
+		KEY_T:
+			set_tree(not tree_shown)
 		KEY_Q, KEY_ESCAPE:
 			_save_prefs()
 			_release_zen()

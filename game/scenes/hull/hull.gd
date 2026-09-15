@@ -10,6 +10,10 @@ const RAIL := 0.08       # rail height, fraction of frame height
 const GAP := 8.0
 const TICK := 48.0
 
+## After the instruments are placed for a new frame size; the click area
+## follows them.
+signal laid_out
+
 var _docked: Array = []  # [block, side ("left"/"right"), index]
 var _laid_for := Vector2.ZERO
 
@@ -29,14 +33,14 @@ func dock(block: Control, side: String, index: int) -> void:
 	_laid_for = Vector2.ZERO
 
 
-## How far down a column its instruments reach, in canvas units. The
-## hull's click area ends there, so windows below stay reachable.
-func arm_bottom(side: String) -> float:
-	var y := GAP
+## Each instrument's disc in the hull's coordinates, [center, radius]:
+## the click area is these and nothing else of the columns.
+func discs() -> Array:
+	var out := []
 	for entry in _docked:
-		if entry[1] == side:
-			y += entry[0].size.y + GAP
-	return y
+		var block: Control = entry[0]
+		out.append([block.position + block.size * 0.5, minf(block.size.x, block.size.y) * 0.5])
+	return out
 
 
 func _layout(s: Vector2) -> void:
@@ -51,6 +55,7 @@ func _layout(s: Vector2) -> void:
 			x += s.x - col_w
 		block.position = Vector2(x, next_y[side])
 		next_y[side] += block.size.y + GAP
+	laid_out.emit()
 
 
 func _draw() -> void:

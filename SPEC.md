@@ -43,11 +43,25 @@ right edge over the desktop; Josh caught it.
 
 The middle stays nearly clear: that is where real windows live. In
 desktop mode the window is always on top and covers the screen, but the
-mouse passthrough polygon is the hull: the rail, and each side column
-only as far down as its instruments reach (tightened 2026-09-09; the
-full columns had been swallowing clicks meant for windows under them).
-Clicks anywhere else go straight to the desktop. The void is a canopy
-you look through, not a wall.
+mouse passthrough polygon is only each instrument's disc and a 16 px
+strip under the rail's hairline, somewhere to click so the keys reach
+the cockpit. Clicks anywhere else go straight to the desktop. The void
+is a canopy you look through, not a wall. Tightened twice: 2026-09-09
+from the full columns to the columns as far down as their instruments,
+and 2026-09-11 to the discs and the strip, after Josh found the
+top-left column sitting over the traffic lights of most windows and the
+rail band over their bottom edges, so he could not minimize them and
+kept leaving zen. The polygon is one even-odd shape (macOS tests it by
+ray cast): every disc is reached from the strip along a retraced,
+zero-width bridge.
+
+The HUD can be stowed (H): the hull, its instruments, and NERViewer
+(hidden as an app through System Events, shown again when the HUD
+returns or the cockpit quits) fade out over 0.8 s while the void and
+Voyage fly on, and the click area shrinks to the strip. The tree has its
+own key (T). Both persist. Josh's ask, 2026-09-11: still floating
+through the void while reading email, the cockpit put away until
+wanted.
 
 ## Principles
 
@@ -132,8 +146,8 @@ it at login; NERViewer has the same pair). The exported app finds the
 helper beside its executable and NERViewer through `Paths.find_up`, so
 the two repos only have to stay siblings.
 
-Keys: B desktop mode, Z zen, W fake wallpaper (windowed), S screenshot,
-Q quit, number keys the drive's gears: 1-5 states, 6-0 and -, = sequences (see
+Keys: B desktop mode, Z zen, H stow the HUD, T stow the tree, W fake
+wallpaper (windowed), S screenshot, Q quit, number keys the drive's gears: 1-5 states, 6-0 and -, = sequences (see
 Movement), backtick Voyage on or off, tilde its next movement.
 
 ## Movement
@@ -363,6 +377,9 @@ cockpit runs at 60 fps in zen for the same reason.
    `../NERViewer/dist/NERViewer.app` once. Godot on macOS measures
    windows in pixels, so both apps share one coordinate system.
 3b. More instruments.
+3d. Living with it: the click area cut to the discs and the rail strip,
+   the HUD and the tree stowable (H, T). Built 2026-09-11 on Josh's
+   brain dump of the day's obstacles.
 3c. Movement: the drive, its twelve gears and Voyage (see Movement).
    Built, reviewed, re-benched and shipped to the desktop 2026-09-10.
 4. Bugs (rabbits on the failing block), garage mode (drag blocks
