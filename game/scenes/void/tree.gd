@@ -61,6 +61,7 @@ var _laid: Array = []            # this frame's branches, far to near: [z, Branc
 var _crown: Node2D              # trunk, OS halos, twigs, bud halos, names; breathes by modulate
 var _cores: Node2D              # the OS core and the frontmost bud's core; constant
 var _signature: Array = []      # what the crown was last drawn from
+var _geom_key: Array = []       # what the boughs' geometry was last built from
 const TIP_STEP := 0.3           # px a tip must move before the crown is redrawn
 const BOUGH_SHADER := preload("res://shaders/bough.gdshader")
 const BOUGH_PX := 14.0           # the Line2D's width: room for the halo
@@ -225,6 +226,37 @@ func _lay_out() -> void:
 	var breathe := 0.85 + 0.15 * Palette.breath()
 	_mat.set_shader_parameter("breath", Palette.breath())
 	_mat.set_shader_parameter("headroom", Palette.headroom)
+	# The geometry (curves, projection, order) is rebuilt only when a
+	# branch has moved: its angles, growth or length. Heat, sap and the
+	# breath are set every frame and cost nothing.
+	var key: Array = [_os]
+	for id in _branches:
+		var b: Branch = _branches[id]
+		var app = Workspace.apps.get(id)
+		if app == null:
+			continue
+		key.append([id, snappedf(b.az, 0.001), snappedf(b.el, 0.001), snappedf(b.growth, 0.005), snappedf(_length(app), 0.25)])
+	if key != _geom_key:
+		_geom_key = key
+		_build_geometry()
+	for entry in _laid:
+		var b: Branch = entry[1]
+		var app = entry[2]
+		var bough: Line2D = entry[10]
+		var heat := b.heat
+		entry[7] = heat
+		bough.set_instance_shader_parameter("heat", heat)
+		bough.set_instance_shader_parameter("life", b.life)
+		bough.set_instance_shader_parameter("active", 1.0 if app.active else 0.0)
+		bough.set_instance_shader_parameter("hidden", 1.0 if app.alive and app.hidden else 0.0)
+		bough.set_instance_shader_parameter("sap", b.sap)
+	_redraw_crown_if_changed()
+
+
+func _build_geometry() -> void:
+	var frame := Palette.color("frame")
+	var light := Palette.color("light")
+	var gold := Palette.color("core")
 	_laid.clear()
 	for id in _branches:
 		var b: Branch = _branches[id]
@@ -252,20 +284,18 @@ func _lay_out() -> void:
 		bough.visible = true
 		bough.points = pts
 		bough.width = BOUGH_PX * lerpf(0.8, 1.2, near)
-		bough.set_instance_shader_parameter("heat", heat)
-		bough.set_instance_shader_parameter("life", b.life)
 		bough.set_instance_shader_parameter("near", near)
-		bough.set_instance_shader_parameter("active", 1.0 if app.active else 0.0)
-		bough.set_instance_shader_parameter("hidden", 1.0 if app.alive and app.hidden else 0.0)
 		bough.set_instance_shader_parameter("px_width", bough.width)
-		bough.set_instance_shader_parameter("sap", b.sap)
 		_laid.append([tip3.z, b, app, pts3, pts, near, k, heat, col, alpha, bough])
 	_laid.sort_custom(func(p, q): return p[0] < q[0])
 	for i in _laid.size():
 		move_child(_laid[i][10], i)
 	move_child(_crown, get_child_count() - 2)
 	move_child(_cores, get_child_count() - 1)
-	# Redraw the crown only when what it shows has changed.
+
+
+## Redraw the crown only when what it shows has changed.
+func _redraw_crown_if_changed() -> void:
 	var sig: Array = [_os, _root]
 	for entry in _laid:
 		var b: Branch = entry[1]

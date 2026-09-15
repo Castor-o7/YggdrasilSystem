@@ -361,6 +361,18 @@ the rings static, 20% with the crown cached; an empty frame is 6%. The
 picture is unchanged (stills differ on under 1% of pixels, all star
 drift), and Josh found the rings clearer than before.
 
+Two more tries the same day, measured back to back in one session:
+the tree now rebuilds its geometry (curves, projection, order) only when
+a branch's angles, growth or length have moved, and sets only heat, sap
+and the breath each frame: 19.5% to 16%. Rendering each ring once to a
+texture at twice the size and turning a sprite cut the render items to
+a thousand and the process to 12%, but bilinear filtering mixes
+transparent black into the hairlines (straight alpha) and the
+inscription went faint, so it was dropped; two-point polylines in place
+of antialiased lines cut the items the same way and cost two points
+more, so they were dropped too. What is left above the 6% floor is the
+static render of the hull's strokes and the frame loop's own work.
+
 `Pace` (autoload) owns `Engine.max_fps`. At rest it is 30, and 30 is
 the floor: a 12 fps rest was tried on 2026-09-10 and read as harsh, so
 below 30 the rate is not a lever for cost. What Pace manages is the
