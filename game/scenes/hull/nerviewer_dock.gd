@@ -47,6 +47,8 @@ func _process(dt: float) -> void:
 		return
 	_timer = POLL
 	block.bare = running()
+	# Failing: launched (or given up on) and still not here, past the grace.
+	block.failing = _launched and not running() and Workspace.clock > LAUNCH_GRACE * 2.0
 	if running() and _hidden != _want_hidden:
 		_hidden = _want_hidden
 		Osa.fire(HIDE % [BUNDLE_ID, "true" if _hidden else "false"])

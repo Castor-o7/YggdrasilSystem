@@ -309,6 +309,12 @@ func _redraw_crown_if_changed() -> void:
 		_cores.queue_redraw()
 
 
+## The warp's surge: a bead of light at `u` (0 root .. 1 bud) on every
+## bough at once; below 0 there is none.
+func set_surge(u: float) -> void:
+	_mat.set_shader_parameter("surge", u)
+
+
 func _bough(id: String) -> Line2D:
 	var bough: Line2D = _boughs.get(id)
 	if bough == null:

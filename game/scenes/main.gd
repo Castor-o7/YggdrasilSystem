@@ -367,6 +367,7 @@ func _notification(what: int) -> void:
 
 func _process(dt: float) -> void:
 	_hud_alpha = move_toward(_hud_alpha, 1.0 if hud else 0.0, dt / STOW)
+	_warp(dt)
 	hull.modulate.a = _hud_alpha
 	hull.visible = _hud_alpha > 0.0
 	_tree_alpha = move_toward(_tree_alpha, 1.0 if tree_shown else 0.0, dt / STOW)
@@ -382,6 +383,28 @@ func _process(dt: float) -> void:
 		if win.position != usable.position or win.size != usable.size:
 			win.position = usable.position
 			win.size = usable.size
+
+
+## The warp transition: the hull answers the jump. Over the charge the
+## rings spin up and the inscription warms; at the jump a surge of light
+## runs root to bud through every branch; over the arrival the rings
+## wind down. `_warp_k` rises with the charge, holds through the sweep
+## and falls over the arrive.
+var _warp_k := 0.0
+func _warp(dt: float) -> void:
+	var d = void_layer.drive
+	var want := 0.0
+	var surge := -1.0
+	if d.gear == d.WARP:
+		match d.phase:
+			"charge": want = smoothstep(0.0, 1.0, d.phase_t / d.WARP_CHARGE)
+			"sweep":
+				want = 1.0
+				surge = clampf(d.phase_t / 0.9, 0.0, 1.2)
+			"arrive": want = 1.0 - smoothstep(0.0, 1.0, d.phase_t / d.WARP_ARRIVE)
+	_warp_k = move_toward(_warp_k, want, dt / 0.5) if want < _warp_k else want
+	hull.set_warp(_warp_k)
+	tree.set_surge(surge)
 
 
 ## A gear key: the pilot has the helm, so Voyage ends and the gear runs.

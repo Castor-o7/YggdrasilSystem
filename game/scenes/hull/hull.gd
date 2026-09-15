@@ -68,6 +68,12 @@ func dock(block: Control, side: String, index: int) -> void:
 	_laid_for = Vector2.ZERO
 
 
+## The warp, 0..1: handed to every instrument.
+func set_warp(k: float) -> void:
+	for entry in _docked:
+		entry[0].warp = k
+
+
 ## Where every instrument sits: title -> "side:index".
 func arrangement() -> Dictionary:
 	var out := {}

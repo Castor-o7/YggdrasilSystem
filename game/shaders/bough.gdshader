@@ -12,6 +12,7 @@ uniform vec4 light_color : source_color = vec4(0.863, 0.902, 1.0, 1.0);
 uniform vec4 gold_color : source_color = vec4(0.949, 0.831, 0.541, 1.0);
 uniform float breath : hint_range(0.0, 1.0) = 0.0;
 uniform float headroom = 1.0;      // Palette.headroom; the sap alone spends it
+uniform float surge = -1.0;        // the warp: a bead at this place on every bough, none below 0
 
 instance uniform float heat : hint_range(0.0, 1.0) = 0.0;     // CPU, 0..1
 instance uniform float life : hint_range(0.0, 1.0) = 1.0;     // 1 alive, GHOST withered
@@ -56,7 +57,12 @@ void fragment() {
 	float bead = exp(-d * d * 400.0) * step(0.08, h) * smoothstep(0.08, 0.3, h);
 	float flow = bead * (1.0 - smoothstep(0.0, 2.0 + 2.0 * h, across)) * 0.9 * lf;
 
-	float a = min(1.0, (core + soft + halo) * alpha + flow);
-	vec3 rgb = mix(col, light_color.rgb, flow * 0.7) * mix(1.0, headroom, flow);
+	float sg = 0.0;
+	if (surge >= 0.0) {
+		float ds = UV.x - surge;
+		sg = exp(-ds * ds * 60.0) * (1.0 - smoothstep(0.0, 3.0, across)) * lf;
+	}
+	float a = min(1.0, (core + soft + halo) * alpha + flow + sg);
+	vec3 rgb = mix(col, light_color.rgb, min(1.0, flow * 0.7 + sg)) * mix(1.0, headroom, max(flow, sg));
 	COLOR = vec4(rgb, a);
 }

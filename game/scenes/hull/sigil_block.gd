@@ -43,6 +43,23 @@ var bare := false:
 			bare = v
 			queue_redraw()
 @export var seed := 1
+## Failing: the instrument's source is gone (NERViewer not running after
+## its launch grace, say). Bugs appear: rabbits on the disc's floor.
+var failing := false:
+	set(v):
+		failing = v
+		if _rabbits == null:
+			_rabbits = RABBITS.new()
+			_rabbits.name = "Rabbits"
+			add_child(_rabbits)
+		_rabbits.disc = inner_rect()
+		_rabbits.failing = v
+## The warp: 0 at rest; the rings spin up to WARP_SPIN times their pace
+## and the inscription warms toward gold as it rises.
+var warp := 0.0
+const WARP_SPIN := 6.0
+const RABBITS := preload("res://scenes/hull/rabbits.gd")
+var _rabbits: Node2D
 
 @onready var content: MarginContainer = $Content
 
@@ -87,6 +104,8 @@ func _fit_content() -> void:
 		ring.queue_redraw()
 	queue_redraw()
 	var r := _outer_radius() - INNER_INSET
+	if _rabbits != null:
+		_rabbits.disc = inner_rect()
 	var side := r * 1.5
 	content.position = size * 0.5 - Vector2(side, side) * 0.5
 	content.size = Vector2(side, side)
@@ -125,12 +144,13 @@ func _build_glyphs() -> void:
 
 
 func _process(dt: float) -> void:
-	_t += dt
+	_t += dt * (1.0 + (WARP_SPIN - 1.0) * warp)
 	# Turn and breathe; nothing is redrawn.
 	for i in RINGS.size():
 		_ring_nodes[i].rotation = _t * RINGS[i]["speed"]
 	_ring_nodes[RINGS.size()].rotation = -_t * RINGS[2]["speed"]
 	_rings.modulate.a = 0.85 + 0.15 * Palette.breath()
+	_ring_nodes[1].modulate = Color.WHITE.lerp(Palette.color("core"), 0.8 * warp)
 	_inscription_guard -= dt
 	if _inscription_guard <= 0.0:
 		_inscription_guard = INSCRIPTION_REFRESH

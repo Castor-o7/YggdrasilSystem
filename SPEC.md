@@ -96,7 +96,8 @@ wanted.
    hairline hid it) and each bead is walked by the tree, never computed
    from the clock, so a change of pace never moves it. Twigs, buds and
    names are still drawn by hand on the crown above. Every branch is a
-   node, addressable by name.
+   node, addressable by name. The warp's surge runs through every bough
+   as a bead of light, root to bud (see the plan's item 4).
 
 ## Layout
 
@@ -455,4 +456,20 @@ cockpit runs at 60 fps in zen for the same reason.
    arrangement persists (`[hull] <title>=side:index` in the prefs).
    Josh's brief: the desktop arranged to make the most of the screen
    without giving up personal preference.
-4. Bugs (rabbits on the failing block), warp transition.
+4. Bugs and the warp transition — done 2026-09-15.
+   Bugs are literally rabbits (scenes/hull/rabbits.gd): a failing
+   instrument (`SigilBlock.failing`; the NERViewer block fails when
+   NERViewer is not running past twice its launch grace) gets one on
+   the floor of its inner disc, a hairline creature about 14 px tall in
+   the void's register, that sits still and every 1.6 to 4.5 s hops,
+   turning at the disc's edge. The hop is the error's own motion and
+   nothing else moves. A second rabbit arrives after a minute of
+   failure and a third after three; when the failure clears they hop
+   off and fade over a second. `tools/rabbits_probe.tscn` forces the
+   NERViewer block to fail and photographs them.
+   The warp transition is the hull answering the jump (main.gd `_warp`):
+   over the charge the sigil rings spin up to six times their pace and
+   the inscription ring warms toward gold; at the jump a bead of light
+   runs root to bud through every branch at once (the bough shader's
+   `surge` uniform); over the arrival the rings wind down. The void's
+   own warp is unchanged. Josh judged both live 2026-09-15.

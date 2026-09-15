@@ -1,12 +1,11 @@
 extends Node
-## Walks every gear under the current engine, windowed (about four
-## minutes): a still every few seconds of each phase into gearwalk/
-## beside the project, and at every phase boundary the frame before and
-## the frame after, so a cut shows up as a big diff between the pair.
-##   Godot --path game res://tools/gearwalk.tscn
+## Walks every gear under the current engine, windowed: a still every
+## few seconds of each phase, and at every phase boundary the frame
+## before and the frame after, so a cut shows up as a big diff.
 const ORDER := [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+var _order: Array = ORDER
 const STATE_HOLD := 8.0
-const STILL_EVERY := 3.0
+var STILL_EVERY := 3.0 if OS.get_environment("STILL_EVERY") == "" else float(OS.get_environment("STILL_EVERY"))
 var _dir := ""
 var _main: Node
 var _drive
@@ -20,8 +19,10 @@ func _ready() -> void:
 	_drive = _main.get_node("Void/Drive")
 	_dir = ProjectSettings.globalize_path("res://../gearwalk")
 	DirAccess.make_dir_recursive_absolute(_dir)
+	if OS.get_environment("GEARS") != "":
+		_order = Array(OS.get_environment("GEARS").split(",")).map(func(x): return int(x))
 	await get_tree().create_timer(2.0).timeout
-	for g in ORDER:
+	for g in _order:
 		_drive.shift(g)
 		var name: String = _drive.GEARS[g]["name"].replace(" ", "_")
 		var t := 0.0; var since := STILL_EVERY; var key := ""
