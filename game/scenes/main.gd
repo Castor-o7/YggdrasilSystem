@@ -45,6 +45,7 @@ var zen := false
 ## floating through the void while reading email, the cockpit put away
 ## until it is wanted).
 var hud := true
+var garage := false
 var tree_shown := true
 const STOW := 0.8               # seconds to fade either away or back
 var _hud_alpha := 1.0
@@ -75,6 +76,7 @@ func _dock_blocks() -> void:
 	clock.size = Vector2(200, 200)
 	clock.get_node("Content").add_child(CLOCK.instantiate())
 	hull.dock(clock, "left", 0)
+	_place_from_prefs(clock, "left", 0)
 	# NERViewer: a sigil with nothing inside; NERViewer's own window fills it.
 	var nerv: SigilBlock = BLOCK.instantiate()
 	nerv.title = "nerviewer"
@@ -88,6 +90,8 @@ func _dock_blocks() -> void:
 	waiting.add_theme_color_override("font_color", Palette.dim(Palette.color("light"), 0.35))
 	nerv.get_node("Content").add_child(waiting)
 	hull.dock(nerv, "right", 0)
+	_place_from_prefs(nerv, "right", 0)
+	hull.arranged.connect(_save_prefs)
 	if not persist:
 		return  # the shots tool must not launch or dock the real NERViewer
 	_nerviewer_dock = NERVIEWER_DOCK.new()
@@ -260,7 +264,11 @@ func _update_passthrough() -> void:
 	var rail_top: float = s.y * (1.0 - hull.RAIL)
 	var rail_low: float = rail_top + k * RAIL_STRIP
 	var loops: Array = [[Vector2(0, rail_top), Vector2(s.x, rail_top), Vector2(s.x, rail_low), Vector2(0, rail_low)]]
-	if hud:
+	if hud and garage:
+		var col_w: float = s.x * hull.SIDE
+		loops.append([Vector2(0, 0), Vector2(col_w, 0), Vector2(col_w, rail_top), Vector2(0, rail_top)])
+		loops.append([Vector2(s.x - col_w, 0), Vector2(s.x, 0), Vector2(s.x, rail_top), Vector2(s.x - col_w, rail_top)])
+	elif hud:
 		for disc in hull.discs():
 			var c: Vector2 = disc[0] * k
 			var r: float = disc[1] * k
@@ -284,6 +292,24 @@ static func _one_polygon(loops: Array) -> PackedVector2Array:
 			pts.append(p)
 		pts.append(loop[0])
 	return pts
+
+
+## Where the block was left in garage mode, if anywhere.
+func _place_from_prefs(block: Control, side: String, index: int) -> void:
+	if not persist:
+		return
+	var cfg := ConfigFile.new()
+	if cfg.load(PREFS) != OK:
+		return
+	var at := str(cfg.get_value("hull", block.title, "%s:%d" % [side, index])).split(":")
+	if at.size() == 2 and at[0] in ["left", "right"]:
+		hull.place(block, at[0], int(at[1]))
+
+
+func set_garage(on: bool) -> void:
+	garage = on
+	hull.garage = on
+	_update_passthrough()
 
 
 func _load_prefs() -> void:
@@ -325,6 +351,9 @@ func _save_prefs() -> void:
 	cfg.set_value("zen", "prev_dock", _zen_prev[0])
 	cfg.set_value("zen", "prev_menu", _zen_prev[1])
 	cfg.set_value("zen", "prev_terminal", _term_prev)
+	var at: Dictionary = hull.arrangement()
+	for title in at:
+		cfg.set_value("hull", title, at[title])
 	cfg.save(PREFS)
 
 
@@ -373,6 +402,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			set_zen(not zen)
 		KEY_H:
 			set_hud(not hud)
+		KEY_G:
+			set_garage(not garage)
 		KEY_T:
 			set_tree(not tree_shown)
 		KEY_Q, KEY_ESCAPE:

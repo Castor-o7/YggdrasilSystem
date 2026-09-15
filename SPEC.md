@@ -163,8 +163,8 @@ it at login; NERViewer has the same pair). The exported app finds the
 helper beside its executable and NERViewer through `Paths.find_up`, so
 the two repos only have to stay siblings.
 
-Keys: B desktop mode, Z zen, H stow the HUD, T stow the tree, W fake
-wallpaper (windowed), S screenshot, Q quit, number keys the drive's gears: 1-5 states, 6-0 and -, = sequences (see
+Keys: B desktop mode, Z zen, H stow the HUD, T stow the tree, G garage
+mode, W fake wallpaper (windowed), S screenshot, Q quit, number keys the drive's gears: 1-5 states, 6-0 and -, = sequences (see
 Movement), backtick Voyage on or off, tilde its next movement.
 
 ## Movement
@@ -428,5 +428,15 @@ cockpit runs at 60 fps in zen for the same reason.
    brain dump of the day's obstacles.
 3c. Movement: the drive, its twelve gears and Voyage (see Movement).
    Built, reviewed, re-benched and shipped to the desktop 2026-09-10.
-4. Bugs (rabbits on the failing block), garage mode (drag blocks
-   between slots), warp transition.
+3e. Garage mode — done 2026-09-15. G shows each column's slots as faint
+   gold circles, the one after the last instrument empty; an instrument
+   is dragged by its ring (NERViewer's by the ring outside its guest's
+   window) and dropped: the side by which half of the frame, the index
+   by how many of that column's other blocks sit above the drop, and
+   the others ease over in 0.3 s. Over the desktop the whole columns
+   take the mouse while the garage is open, so a drag can reach an
+   empty slot; leaving it restores the disc-only click area. The
+   arrangement persists (`[hull] <title>=side:index` in the prefs).
+   Josh's brief: the desktop arranged to make the most of the screen
+   without giving up personal preference.
+4. Bugs (rabbits on the failing block), warp transition.
