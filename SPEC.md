@@ -344,6 +344,23 @@ whenever zen was on and 30 otherwise, and over the desktop it and the
 docked NERViewer each took about 40% of a core with WindowServer
 another 16% behind them, on battery.
 
+Where the cost lived, found 2026-09-15 with `tools/profile.tscn` (which
+runs the cockpit with one part hidden or stopped and reports the process's
+CPU and the render items per frame): not in the void's shader, which is
+GPU work and costs the process nothing measurable, but in redrawing. The
+sigil rings turned and breathed by rebuilding every antialiased stroke of
+every glyph, tick and arc thirty times a second, and the tree's crown
+reshaped its eight names every frame; one antialiased line is 18 render
+items, so a frame carried four thousand. Rendering the void at half
+resolution was tried first and saved nothing. Now each ring is a node
+drawn once per layout and turned by its rotation, the breath is a
+modulate, the rail likewise, and the crown redraws only when a tip has
+moved a third of a pixel or an app's heat, focus, life or twigs changed.
+Same real workspace, same session, windowed at 30: 30% before, 24% with
+the rings static, 20% with the crown cached; an empty frame is 6%. The
+picture is unchanged (stills differ on under 1% of pixels, all star
+drift), and Josh found the rings clearer than before.
+
 `Pace` (autoload) owns `Engine.max_fps`. At rest it is 30, and 30 is
 the floor: a 12 fps rest was tried on 2026-09-10 and read as harsh, so
 below 30 the rate is not a lever for cost. What Pace manages is the

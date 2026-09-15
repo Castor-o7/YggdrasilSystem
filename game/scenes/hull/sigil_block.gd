@@ -4,6 +4,12 @@ extends Control
 ## turn around whatever lives in `Content`, each ring at its own speed and
 ## every other ring the other way. Hairlines, pale light, real alpha: the
 ## same register as the void, so the instruments belong to it.
+##
+## Drawn once, moved every frame (2026-09-15): each ring is a Node2D of
+## its own that draws its hairlines when the block is laid out and then
+## only turns, by its `rotation`; the breath is the rings' modulate. The
+## cockpit used to rebuild every antialiased stroke thirty times a second,
+## and that, not the void's shader, was most of its idle cost.
 
 const GLYPH_COUNT := 28
 ## The middle ring carries the Ring verse in Tengwar (fonts/the_one_ring.ttf,
@@ -21,6 +27,9 @@ const RINGS := [
 	{"inset": 38.0, "speed": 0.0933, "kind": "arcs"},
 ]
 const INNER_INSET := 46.0
+## The inscription's strips come from the font atlas, whose placement
+## could move if the text server repacked it; redraw that ring this often.
+const INSCRIPTION_REFRESH := 2.0
 
 ## The instrument's name. Not drawn (the disc stays bare); kept for the
 ## dock and for tools that need to tell blocks apart.
@@ -28,7 +37,11 @@ const INNER_INSET := 46.0
 ## Bare: nothing is painted inside the inner ring. For a block whose guest
 ## is another window (NERViewer), so the cockpit never smokes it over,
 ## whichever of the two floating windows the system has put on top.
-var bare := false
+var bare := false:
+	set(v):
+		if v != bare:
+			bare = v
+			queue_redraw()
 @export var seed := 1
 
 @onready var content: MarginContainer = $Content
@@ -36,16 +49,43 @@ var bare := false
 var _glyphs: Array = []   # per glyph: Array of strokes; a stroke is [kind, a, b]
 var _inscription: Inscription
 var _t := 0.0
+var _rings: Node2D                 # breathes by modulate; sits under Content
+var _ring_nodes: Array[Node2D] = []   # RINGS in order, then the ticks, then the inner ring
+var _inscription_guard := 0.0
 
 
 func _ready() -> void:
 	_inscription = Inscription.new()
 	_build_glyphs()
+	_rings = Node2D.new()
+	_rings.name = "Rings"
+	add_child(_rings)
+	move_child(_rings, 0)
+	for spec in RINGS:
+		var ring := Node2D.new()
+		ring.name = str(spec["kind"]).capitalize()
+		ring.draw.connect(_draw_ring.bind(ring, spec))
+		_rings.add_child(ring)
+		_ring_nodes.append(ring)
+	var ticks := Node2D.new()   # the arcs ring's ticks turn the other way
+	ticks.name = "Ticks"
+	ticks.draw.connect(_draw_ticks.bind(ticks, RINGS[2]))
+	_rings.add_child(ticks)
+	_ring_nodes.append(ticks)
+	var inner := Node2D.new()
+	inner.name = "Inner"
+	inner.draw.connect(_draw_inner.bind(inner))
+	_rings.add_child(inner)
+	_ring_nodes.append(inner)
 	resized.connect(_fit_content)
 	_fit_content()
 
 
 func _fit_content() -> void:
+	_rings.position = size * 0.5
+	for ring in _ring_nodes:
+		ring.queue_redraw()
+	queue_redraw()
 	var r := _outer_radius() - INNER_INSET
 	var side := r * 1.5
 	content.position = size * 0.5 - Vector2(side, side) * 0.5
@@ -86,59 +126,74 @@ func _build_glyphs() -> void:
 
 func _process(dt: float) -> void:
 	_t += dt
-	queue_redraw()
+	# Turn and breathe; nothing is redrawn.
+	for i in RINGS.size():
+		_ring_nodes[i].rotation = _t * RINGS[i]["speed"]
+	_ring_nodes[RINGS.size()].rotation = -_t * RINGS[2]["speed"]
+	_rings.modulate.a = 0.85 + 0.15 * Palette.breath()
+	_inscription_guard -= dt
+	if _inscription_guard <= 0.0:
+		_inscription_guard = INSCRIPTION_REFRESH
+		_ring_nodes[1].queue_redraw()
 
 
+## The disc: a faint fill so the instrument has a floor over the desktop.
+## It does not breathe; drawn when the block is laid out or `bare` changes.
 func _draw() -> void:
 	var c := size * 0.5
 	var R := _outer_radius()
-	var frame := Palette.color("frame")
-	var light := Palette.color("light")
-	var gold := Palette.color("core")
-	var breathe := 0.85 + 0.15 * Palette.breath()
-
-	# The disc: a faint fill so the instrument has a floor over the desktop.
 	var ri := R - INNER_INSET
 	if bare:
 		draw_arc(c, (R + ri) * 0.5, 0.0, TAU, 128, Palette.dim(Palette.color("ground"), 0.18), R - ri, false)
 	else:
 		draw_circle(c, ri, Palette.dim(Palette.color("ground"), 0.35))
 		draw_circle(c, R, Palette.dim(Palette.color("ground"), 0.18))
-	draw_arc(c, ri, 0.0, TAU, 96, Palette.dim(light, 0.28 * breathe), 1.0, true)
-
-	for ring in RINGS:
-		var r: float = R - ring["inset"]
-		var rot: float = _t * ring["speed"]
-		match ring["kind"]:
-			"glyphs":
-				draw_arc(c, r + 6.0, 0.0, TAU, 128, Palette.dim(frame, 0.38 * breathe), 1.0, true)
-				draw_arc(c, r - 7.0, 0.0, TAU, 128, Palette.dim(frame, 0.18 * breathe), 1.0, true)
-				for i in GLYPH_COUNT:
-					var a := rot + TAU * float(i) / float(GLYPH_COUNT)
-					_draw_glyph(c + Vector2.from_angle(a) * r, a + PI / 2.0, _glyphs[i], Palette.dim(light, 0.55 * breathe))
-			"inscription":
-				draw_arc(c, r + 7.0, 0.0, TAU, 128, Palette.dim(frame, 0.16 * breathe), 1.0, true)
-				_inscription.draw(self, c, r, rot, INSCRIPTION_HEIGHT, Palette.dim(light, 0.7 * breathe))
-				draw_arc(c, r - 7.0, 0.0, TAU, 128, Palette.dim(frame, 0.16 * breathe), 1.0, true)
-			"arcs":
-				for k in 3:
-					var a0 := rot + TAU * float(k) / 3.0
-					draw_arc(c, r, a0, a0 + deg_to_rad(74.0), 32, Palette.dim(gold, 0.5 * breathe), 1.2, true)
-					draw_circle(c + Vector2.from_angle(a0) * r, 1.4, Palette.dim(gold, 0.85 * breathe))
-				for k in 24:
-					var a := -rot + TAU * float(k) / 24.0
-					var d := Vector2.from_angle(a)
-					var long := k % 6 == 0
-					draw_line(c + d * (r - 3.0), c + d * (r - (7.0 if long else 5.0)), Palette.dim(frame, 0.45 * breathe), 1.0, true)
 
 
-func _draw_glyph(at: Vector2, angle: float, strokes: Array, col: Color) -> void:
-	draw_set_transform(at, angle, Vector2.ONE)
+func _draw_inner(ci: CanvasItem) -> void:
+	ci.draw_arc(Vector2.ZERO, _outer_radius() - INNER_INSET, 0.0, TAU, 96, Palette.dim(Palette.color("light"), 0.28), 1.0, true)
+
+
+## One ring about its own origin, unturned: the node's rotation turns it.
+func _draw_ring(ci: CanvasItem, ring: Dictionary) -> void:
+	var r: float = _outer_radius() - ring["inset"]
+	var frame := Palette.color("frame")
+	var light := Palette.color("light")
+	var gold := Palette.color("core")
+	var c := Vector2.ZERO
+	match ring["kind"]:
+		"glyphs":
+			ci.draw_arc(c, r + 6.0, 0.0, TAU, 128, Palette.dim(frame, 0.38), 1.0, true)
+			ci.draw_arc(c, r - 7.0, 0.0, TAU, 128, Palette.dim(frame, 0.18), 1.0, true)
+			for i in GLYPH_COUNT:
+				var a := TAU * float(i) / float(GLYPH_COUNT)
+				_draw_glyph(ci, Vector2.from_angle(a) * r, a + PI / 2.0, _glyphs[i], Palette.dim(light, 0.55))
+		"inscription":
+			ci.draw_arc(c, r + 7.0, 0.0, TAU, 128, Palette.dim(frame, 0.16), 1.0, true)
+			_inscription.draw(ci, c, r, 0.0, INSCRIPTION_HEIGHT, Palette.dim(light, 0.7))
+			ci.draw_arc(c, r - 7.0, 0.0, TAU, 128, Palette.dim(frame, 0.16), 1.0, true)
+		"arcs":
+			for k in 3:
+				var a0 := TAU * float(k) / 3.0
+				ci.draw_arc(c, r, a0, a0 + deg_to_rad(74.0), 32, Palette.dim(gold, 0.5), 1.2, true)
+				ci.draw_circle(Vector2.from_angle(a0) * r, 1.4, Palette.dim(gold, 0.85))
+
+
+func _draw_ticks(ci: CanvasItem, ring: Dictionary) -> void:
+	var r: float = _outer_radius() - ring["inset"]
+	var frame := Palette.color("frame")
+	for k in 24:
+		var d := Vector2.from_angle(TAU * float(k) / 24.0)
+		var long := k % 6 == 0
+		ci.draw_line(d * (r - 3.0), d * (r - (7.0 if long else 5.0)), Palette.dim(frame, 0.45), 1.0, true)
+
+
+func _draw_glyph(ci: CanvasItem, at: Vector2, angle: float, strokes: Array, col: Color) -> void:
+	ci.draw_set_transform(at, angle, Vector2.ONE)
 	for s in strokes:
 		match s[0]:
-			"line": draw_line(s[1], s[2], col, 1.0, true)
-			"dot": draw_circle(s[1], 0.9, col)
-			"ring": draw_arc(s[1], s[2].x, 0.0, TAU, 12, col, 1.0, true)
-			"arc": draw_arc(s[1], s[2].x, s[2].y, s[2].y + PI, 10, col, 1.0, true)
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
-
+			"line": ci.draw_line(s[1], s[2], col, 1.0, true)
+			"dot": ci.draw_circle(s[1], 0.9, col)
+			"ring": ci.draw_arc(s[1], s[2].x, 0.0, TAU, 12, col, 1.0, true)
+			"arc": ci.draw_arc(s[1], s[2].x, s[2].y, s[2].y + PI, 10, col, 1.0, true)
+	ci.draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
