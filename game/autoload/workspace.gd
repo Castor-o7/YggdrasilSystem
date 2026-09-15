@@ -29,7 +29,7 @@ class App:
 	var gone := 0.0         # app-clock seconds when it left
 
 
-var apps: Dictionary = {}   # id -> App
+var apps: Dictionary[String, App] = {}
 var source_name := "none"
 var clock := 0.0            # seconds since the workspace started watching
 

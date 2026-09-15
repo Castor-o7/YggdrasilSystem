@@ -50,13 +50,13 @@ const FAR_WIDTH := 0.7
 const UP := Vector3(0.0, 1.0, 0.0)
 
 ## Per-app drawing state, keyed by app id.
-var _branches: Dictionary = {}
+var _branches: Dictionary[String, Branch] = {}
 var _font: Font
 var _built_for := Vector2.ZERO
 var _root := Vector2.ZERO
 var _os := Vector2.ZERO
 var _mat: ShaderMaterial
-var _boughs: Dictionary = {}     # app id -> Line2D
+var _boughs: Dictionary[String, Line2D] = {}
 var _laid: Array = []            # this frame's branches, far to near: [z, Branch, app, pts3, pts2, near, k, heat, col, alpha]
 var _crown: Node2D              # trunk, OS halos, twigs, bud halos, names; breathes by modulate
 var _cores: Node2D              # the OS core and the frontmost bud's core; constant
