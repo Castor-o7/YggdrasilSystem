@@ -86,8 +86,17 @@ wanted.
    frontmost app carries a gold bud; branches warm with the CPU they and
    their child processes burn; a branch grows in at launch and withers
    to a ghost at quit, so by evening the tree remembers the day. Branch
-   length grows with how long the app has been open. Drawn in GDScript,
-   never shaded, so every branch is addressable.
+   length grows with how long the app has been open. Since 2026-09-15
+   each branch is a Line2D of its own on one shared shader
+   (`shaders/bough.gdshader`): the shader draws the hairline, its depth
+   softness, the heat halo and the sap, a bead of light walking root to
+   bud only while the app burns CPU, faster and brighter the harder it
+   works, so at rest the tree is still. Heat follows CPU with 1.5 s of
+   inertia (the helper's samples are noisy; a halo shows it where a
+   hairline hid it) and each bead is walked by the tree, never computed
+   from the clock, so a change of pace never moves it. Twigs, buds and
+   names are still drawn by hand on the crown above. Every branch is a
+   node, addressable by name.
 
 ## Layout
 

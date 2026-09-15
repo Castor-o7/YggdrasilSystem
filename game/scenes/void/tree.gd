@@ -13,7 +13,10 @@ extends Node2D
 ## branch and every cue agrees with it: near branches are wider, brighter
 ## and crisp with larger names; far ones thin, dim and soft.
 ##
-## Drawn, not shaded: every branch is addressable.
+## Each branch is a Line2D of its own on one shared shader (bough.gdshader,
+## 2026-09-15): the shader draws the hairline, its depth softness, the heat
+## halo and the sap; the twigs, buds and names are drawn by hand on an
+## overlay above. Every branch is a node: addressable by name.
 
 const OS_RISE := 96.0            # OS node this far above the bottom edge
 const EL_MIN := deg_to_rad(18.0) # outermost branches lean this far above level
@@ -46,6 +49,15 @@ var _font: Font
 var _built_for := Vector2.ZERO
 var _root := Vector2.ZERO
 var _os := Vector2.ZERO
+var _mat: ShaderMaterial
+var _boughs: Dictionary = {}     # app id -> Line2D
+var _laid: Array = []            # this frame's branches, far to near: [z, Branch, app, pts3, pts2, near, k, heat, col, alpha]
+var _overlay: Node2D
+const BOUGH_SHADER := preload("res://shaders/bough.gdshader")
+const BOUGH_PX := 14.0           # the Line2D's width: room for the halo
+## Heat follows the app's CPU with inertia: the helper samples once a
+## second and the raw samples are noisy; the halo and the sap must not.
+const HEAT_TAU := 1.5
 
 
 ## Azimuth turns about the trunk: 0 is right, PI/2 toward the viewer, PI
@@ -57,11 +69,22 @@ class Branch:
 	var el_target := 1.0
 	var growth := 0.0
 	var life := 1.0
+	var heat := 0.0                # CPU, eased
+	var sap := 0.0                 # the bead's place along the branch, 0..1, integrated
 	var twigs: Array[float] = []   # growth per twig
 
 
 func _ready() -> void:
 	_font = ThemeDB.fallback_font
+	_mat = ShaderMaterial.new()
+	_mat.shader = BOUGH_SHADER
+	_mat.set_shader_parameter("frame_color", Palette.color("frame"))
+	_mat.set_shader_parameter("light_color", Palette.color("light"))
+	_mat.set_shader_parameter("gold_color", Palette.color("core"))
+	_overlay = Node2D.new()
+	_overlay.name = "Crown"
+	_overlay.draw.connect(_draw_crown)
+	add_child(_overlay)
 
 
 func _process(dt: float) -> void:
@@ -71,7 +94,9 @@ func _process(dt: float) -> void:
 		_root = Vector2(s.x * 0.5, s.y)
 		_os = Vector2(s.x * 0.5, s.y - OS_RISE)
 	_sync(dt)
+	_lay_out()
 	queue_redraw()
+	_overlay.queue_redraw()
 
 
 ## Fold the workspace into drawing state: assign slots, grow, wither.
@@ -96,6 +121,7 @@ func _sync(dt: float) -> void:
 			b = Branch.new()
 			b.az = az
 			b.el = el
+			b.sap = _slot_key(app.id)   # out of step with its neighbours
 			_branches[app.id] = b
 		b.az_target = az
 		b.el_target = el
@@ -105,6 +131,11 @@ func _sync(dt: float) -> void:
 		var alive_now: bool = app != null and app.alive
 		b.az = _approach_angle(b.az, b.az_target, TURN * dt)
 		b.el = move_toward(b.el, b.el_target, TURN * dt)
+		var want_heat := clampf(app.cpu, 0.0, 1.0) if alive_now else 0.0
+		b.heat = lerpf(b.heat, want_heat, 1.0 - exp(-dt / HEAT_TAU))
+		# The bead advances by its speed each frame, so a change of pace
+		# never moves it; it only walks faster.
+		b.sap = fmod(b.sap + (0.06 + 0.22 * b.heat) * dt, 1.0)
 		if alive_now:
 			b.life = minf(1.0, b.life + dt / (WITHER * 0.5))
 			b.growth = minf(1.0, b.growth + dt / GROW)
@@ -173,37 +204,39 @@ func _project(p: Vector3) -> Vector2:
 
 
 func _draw() -> void:
+	# Under the boughs: the trunk and the OS node.
 	var frame := Palette.color("frame")
 	var light := Palette.color("light")
-	var gold := Palette.color("core")
 	var breathe := 0.85 + 0.15 * Palette.breath()
-
-	# Trunk and the OS node.
 	draw_line(_root, _os, Palette.dim(frame, 0.35 * breathe), 1.0, true)
 	draw_circle(_os, 18.0, Palette.dim(light, 0.05 * breathe))
 	draw_circle(_os, 9.0, Palette.dim(light, 0.14 * breathe))
 	draw_circle(_os, 3.0, Palette.dim(Palette.emit(light, 1.0), 0.95))
 
-	# Lay every branch out, then draw back to front so near ones cross over.
-	var laid: Array = []
+
+## Lay every branch out and hand each its Line2D: points, width, and the
+## per-instance values the shader lights it by. Far to near in the tree
+## order so near ones cross over.
+func _lay_out() -> void:
+	var frame := Palette.color("frame")
+	var light := Palette.color("light")
+	var gold := Palette.color("core")
+	var breathe := 0.85 + 0.15 * Palette.breath()
+	_mat.set_shader_parameter("breath", Palette.breath())
+	_mat.set_shader_parameter("headroom", Palette.headroom)
+	_laid.clear()
 	for id in _branches:
 		var b: Branch = _branches[id]
 		var app = Workspace.apps.get(id)
+		var bough := _bough(id)
 		if app == null or b.growth <= 0.0:
+			bough.visible = false
 			continue
 		var pts3 := _curve(_dir(b.az, b.el), _length(app), b.growth)
-		laid.append([pts3[-1].z, b, app, pts3])
-	laid.sort_custom(func(p, q): return p[0] < q[0])
-
-	for entry in laid:
-		var b: Branch = entry[1]
-		var app = entry[2]
-		var pts3: Array[Vector3] = entry[3]
 		var tip3: Vector3 = pts3[-1]
 		var near := clampf(0.5 + 0.5 * tip3.z / BRANCH_MAX, 0.0, 1.0)
 		var k := _scale(tip3)
-
-		var heat := clampf(app.cpu, 0.0, 1.0) if app.alive else 0.0
+		var heat := b.heat
 		var col := frame.lerp(light, 0.4 * heat).lerp(gold, 0.5 * heat * heat)
 		var alpha := lerpf(0.16, 0.5, heat) * b.life * breathe
 		if app.alive and app.hidden:
@@ -211,19 +244,61 @@ func _draw() -> void:
 		if app.active:
 			alpha = maxf(alpha, 0.42 * breathe)
 		alpha = minf(1.0, alpha * lerpf(0.5, 1.1, near))
-
 		var pts := PackedVector2Array()
 		for p in pts3:
 			pts.append(_project(p))
-		if near < 0.5:
-			# Out of focus: a soft wide stroke under a fainter line.
-			draw_polyline(pts, Palette.dim(col, alpha * 0.3 * (1.0 - 2.0 * near)), 3.0, true)
-		draw_polyline(pts, Palette.dim(col, alpha), lerpf(FAR_WIDTH, NEAR_WIDTH, near), true)
-		if heat > 0.15:
-			draw_polyline(pts, Palette.dim(col, alpha * 0.25 * heat), 4.0 * k, true)
+		bough.visible = true
+		bough.points = pts
+		bough.width = BOUGH_PX * lerpf(0.8, 1.2, near)
+		bough.set_instance_shader_parameter("heat", heat)
+		bough.set_instance_shader_parameter("life", b.life)
+		bough.set_instance_shader_parameter("near", near)
+		bough.set_instance_shader_parameter("active", 1.0 if app.active else 0.0)
+		bough.set_instance_shader_parameter("hidden", 1.0 if app.alive and app.hidden else 0.0)
+		bough.set_instance_shader_parameter("px_width", bough.width)
+		bough.set_instance_shader_parameter("sap", b.sap)
+		_laid.append([tip3.z, b, app, pts3, pts, near, k, heat, col, alpha, bough])
+	_laid.sort_custom(func(p, q): return p[0] < q[0])
+	for i in _laid.size():
+		move_child(_laid[i][10], i)
+
+
+func _bough(id: String) -> Line2D:
+	var bough: Line2D = _boughs.get(id)
+	if bough == null:
+		bough = Line2D.new()
+		bough.name = str(id).validate_node_name()
+		bough.material = _mat
+		bough.texture_mode = Line2D.LINE_TEXTURE_STRETCH
+		bough.joint_mode = Line2D.LINE_JOINT_ROUND
+		bough.begin_cap_mode = Line2D.LINE_CAP_ROUND
+		bough.end_cap_mode = Line2D.LINE_CAP_ROUND
+		bough.antialiased = false
+		bough.set_instance_shader_parameter("sap", _slot_key(id))
+		add_child(bough)
+		move_child(_overlay, get_child_count() - 1)
+		_boughs[id] = bough
+	return bough
+
+
+## Over the boughs: twigs, buds and names.
+func _draw_crown() -> void:
+	var light := Palette.color("light")
+	var gold := Palette.color("core")
+	var breathe := 0.85 + 0.15 * Palette.breath()
+	var c := _overlay
+	for entry in _laid:
+		var b: Branch = entry[1]
+		var app = entry[2]
+		var pts3: Array[Vector3] = entry[3]
+		var pts: PackedVector2Array = entry[4]
+		var near: float = entry[5]
+		var k: float = entry[6]
+		var col: Color = entry[8]
+		var alpha: float = entry[9]
 		if b.growth < 1.0:
 			continue
-
+		var tip3: Vector3 = pts3[-1]
 		var tip := pts[-1]
 		var d3 := (pts3[-1] - pts3[-2]).normalized()
 		var dir := (pts[-1] - pts[-2]).angle()
@@ -241,18 +316,18 @@ func _draw() -> void:
 			var a := (t - 0.5) * TWIG_FAN
 			var end3 := tip3 + (d3 * cos(a) + fan_axis * sin(a)).normalized() * TWIG_LEN * g
 			var end := _project(end3)
-			draw_line(tip, end, Palette.dim(col, alpha * 0.8), lerpf(FAR_WIDTH, 1.0, near), true)
+			c.draw_line(tip, end, Palette.dim(col, alpha * 0.8), lerpf(FAR_WIDTH, 1.0, near), true)
 			if g >= 1.0:
 				var ke := _scale(end3)
-				draw_circle(end, 2.6 * ke, Palette.dim(light, 0.07 * b.life * breathe))
-				draw_circle(end, 1.0 * ke, Palette.dim(light, 0.55 * b.life * breathe))
+				c.draw_circle(end, 2.6 * ke, Palette.dim(light, 0.07 * b.life * breathe))
+				c.draw_circle(end, 1.0 * ke, Palette.dim(light, 0.55 * b.life * breathe))
 		# The tip: a bud, gold and haloed when the app is frontmost.
 		if app.active:
-			draw_circle(tip, 9.0 * k, Palette.dim(gold, 0.10 * breathe))
-			draw_circle(tip, 4.5 * k, Palette.dim(Palette.emit(gold, 0.5), 0.22 * breathe))
-			draw_circle(tip, 1.8 * k, Palette.dim(Palette.emit(gold, 1.0), 0.95))
+			c.draw_circle(tip, 9.0 * k, Palette.dim(gold, 0.10 * breathe))
+			c.draw_circle(tip, 4.5 * k, Palette.dim(Palette.emit(gold, 0.5), 0.22 * breathe))
+			c.draw_circle(tip, 1.8 * k, Palette.dim(Palette.emit(gold, 1.0), 0.95))
 		else:
-			draw_circle(tip, 1.4 * k, Palette.dim(light, 0.6 * b.life * breathe))
+			c.draw_circle(tip, 1.4 * k, Palette.dim(light, 0.6 * b.life * breathe))
 		# The name, thin and uppercase, set off the tip on the branch's side;
 		# nearer names are a little larger.
 		var label: String = str(app.name).to_upper()
@@ -261,4 +336,4 @@ func _draw() -> void:
 		var off := Vector2.from_angle(dir) * (TWIG_LEN * k + 14.0)
 		var at := tip + off + Vector2(-w * 0.5 if absf(cos(dir)) < 0.35 else (0.0 if cos(dir) > 0.0 else -w), 3.0)
 		var label_alpha := (0.7 if app.active else 0.3) * b.life * breathe * lerpf(0.6, 1.0, near)
-		draw_string(_font, at, label, HORIZONTAL_ALIGNMENT_LEFT, -1, px, Palette.dim(light, label_alpha))
+		c.draw_string(_font, at, label, HORIZONTAL_ALIGNMENT_LEFT, -1, px, Palette.dim(light, label_alpha))
