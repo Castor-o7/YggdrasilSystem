@@ -19,6 +19,9 @@ uniform vec4 gold_color : source_color = vec4(0.949, 0.831, 0.541, 1.0);
 uniform float lattice_alpha : hint_range(0.0, 1.0) = 0.16;
 uniform float center_clear : hint_range(0.0, 1.0) = 0.12;
 uniform float breath : hint_range(0.0, 1.0) = 0.0;
+// How far above SDR white the screen can show right now (Palette.headroom):
+// 1.0 is none. Only the star heads and the seam's core spend it.
+uniform float headroom = 1.0;
 // The clock for every rhythm in here (the stars' twinkle, the nebula's
 // inner drift), fed by Void and wrapped on CLOCK_PERIOD, which every
 // rhythm divides exactly, so the wrap is invisible. The engine's TIME
@@ -295,7 +298,7 @@ void fragment() {
 	float star_mask = mix(center_clear * 2.0, 1.0, max(rim, bottom));
 	float clear = 1.0 - 0.65 * cloud;
 	dst = over(dst, vec4(star_rgb, halo * 0.5 * star_mask * clear));
-	dst = over(dst, vec4(star_rgb, pin * 0.85 * star_mask * clear));
+	dst = over(dst, vec4(star_rgb * mix(1.0, headroom, pin), pin * 0.85 * star_mask * clear));
 
 	// The ring plane, over the stars (it is near), with its horizon: a
 	// hairline at the bow's height and a soft band of haze just below it.
@@ -319,7 +322,7 @@ void fragment() {
 	float core = exp(-abs(along - sweep) / 3.0);
 	float seam_mask = mix(0.45, 1.0, max(rim, bottom));
 	dst = over(dst, vec4(light_color.rgb, band * 0.28 * sweep_glow * seam_mask));
-	dst = over(dst, vec4(light_color.rgb, core * 0.8 * sweep_glow * seam_mask));
+	dst = over(dst, vec4(light_color.rgb * headroom, core * 0.8 * sweep_glow * seam_mask));
 
 	COLOR = dst;
 }

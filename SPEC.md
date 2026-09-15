@@ -68,6 +68,14 @@ wanted.
 1. **Beautiful at idle.** Same rule as NERViewer.
 2. **Real alpha, no glow pass.** Godot's glow writes no alpha and macOS
    drops it. Every halo in this project is drawn by hand, with alpha.
+   HDR output is parked (2026-09-15): asking macOS for it forces the
+   float 2D viewport, which blends in linear light, and every hairline
+   here is tuned as an alpha over a dark ground in sRGB; a 16% line came
+   out at 37% and the lattice turned from a whisper into a grid. The
+   hooks stay in for when the light sources move into shaders (the tree
+   in light): `Palette.headroom` and `Palette.emit`, and the void
+   shader's `headroom` uniform, all identity while the viewport is
+   8-bit. `tools/hdr_probe.tscn` reports the screen's headroom.
 3. **One register.** Void, tree, rail and instruments are all hairlines
    and pale light on the same palette. Gold is reserved for what is live
    or frontmost. Nothing is chunky, nothing is saturated.

@@ -27,7 +27,7 @@ func _ready() -> void:
 			await RenderingServer.frame_post_draw
 			await RenderingServer.frame_post_draw
 			var live := "%s/void_live.png" % dir
-			if get_viewport().get_texture().get_image().save_png(live) == OK:
+			if _frame().save_png(live) == OK:
 				written.append(live)
 	# Then the scripted day, twenty seconds in: seven apps up, Mail still open,
 	# Godot frontmost. Branches are grown in by hand since no time passes.
@@ -44,7 +44,7 @@ func _ready() -> void:
 		await RenderingServer.frame_post_draw
 		await RenderingServer.frame_post_draw
 		var path := "%s/%s.png" % [dir, shot[0]]
-		if get_viewport().get_texture().get_image().save_png(path) == OK:
+		if _frame().save_png(path) == OK:
 			written.append(path)
 		else:
 			push_error("could not save " + path)
@@ -52,3 +52,18 @@ func _ready() -> void:
 	for p in written:
 		print("  ", p)
 	get_tree().quit(0)
+
+
+## The frame as the screen shows it. The float 2D viewport (HDR output,
+## 2026-09-15) renders in linear light and reads back that way; the PNG
+## wants it encoded, or every still comes out dark.
+func _frame() -> Image:
+	var img := get_viewport().get_texture().get_image()
+	if ProjectSettings.get_setting("rendering/viewport/hdr_2d", false):
+		# Per pixel in float: Image.linear_to_srgb is 8-bit only, and
+		# quantizing linear light first would crush the darks this piece
+		# lives in. A few seconds a frame; this is a tool.
+		for y in img.get_height():
+			for x in img.get_width():
+				img.set_pixel(x, y, img.get_pixel(x, y).linear_to_srgb())
+	return img

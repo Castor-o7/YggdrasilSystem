@@ -182,7 +182,7 @@ func _draw() -> void:
 	draw_line(_root, _os, Palette.dim(frame, 0.35 * breathe), 1.0, true)
 	draw_circle(_os, 18.0, Palette.dim(light, 0.05 * breathe))
 	draw_circle(_os, 9.0, Palette.dim(light, 0.14 * breathe))
-	draw_circle(_os, 3.0, Palette.dim(light, 0.95))
+	draw_circle(_os, 3.0, Palette.dim(Palette.emit(light, 1.0), 0.95))
 
 	# Lay every branch out, then draw back to front so near ones cross over.
 	var laid: Array = []
@@ -249,8 +249,8 @@ func _draw() -> void:
 		# The tip: a bud, gold and haloed when the app is frontmost.
 		if app.active:
 			draw_circle(tip, 9.0 * k, Palette.dim(gold, 0.10 * breathe))
-			draw_circle(tip, 4.5 * k, Palette.dim(gold, 0.22 * breathe))
-			draw_circle(tip, 1.8 * k, Palette.dim(gold, 0.95))
+			draw_circle(tip, 4.5 * k, Palette.dim(Palette.emit(gold, 0.5), 0.22 * breathe))
+			draw_circle(tip, 1.8 * k, Palette.dim(Palette.emit(gold, 1.0), 0.95))
 		else:
 			draw_circle(tip, 1.4 * k, Palette.dim(light, 0.6 * b.life * breathe))
 		# The name, thin and uppercase, set off the tip on the branch's side;

@@ -117,6 +117,7 @@ func _process(dt: float) -> void:
 	_mat.set_shader_parameter("plane_travel", _plane)
 	_mat.set_shader_parameter("plane_smear", rate() * PLANE_RATE * PLANE_STREAK)
 	_mat.set_shader_parameter("breath", Palette.breath())
+	_mat.set_shader_parameter("headroom", Palette.headroom)
 	_mat.set_shader_parameter("clock", fposmod(Time.get_ticks_msec() / 1000.0 + time_offset, CLOCK_PERIOD))
 	_mat.set_shader_parameter("vp", vp())
 	_mat.set_shader_parameter("travel", travel)
