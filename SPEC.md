@@ -154,6 +154,11 @@ YggdrasilSystem/
                              helper runs), void_ground, void_overlay
     tools/bench.tscn/.gd     idle-cost bench: windowed, prefs untouched,
                              prints % of one core at a chosen frame rate
+    tools/profile.tscn/.gd   where the frame goes: the cockpit with a part
+                             hidden or stopped, CPU and render items per frame
+    tools/gearwalk.tscn/.gd  every gear walked, stills per phase and the
+                             frame either side of each boundary (review)
+    tools/voyage_sim.tscn/.gd eight hours of Voyage headless, grammar checked
 ```
 
 Run: `/Applications/Godot.app/Contents/MacOS/Godot --path game`
@@ -267,6 +272,17 @@ otherwise the first leg begins two seconds in.
 A change of frontmost app is a course correction: the bow leans up to
 22 degrees off the default course by an angle that is the app's own, so
 the same app always means the same course.
+
+Reviewed 2026-09-15 under Godot 4.7.2 with two tools that now ship:
+`tools/gearwalk.tscn` walks every gear windowed and saves a still every
+few seconds of each phase plus the frame either side of every phase
+boundary (every boundary differed by under 2 of 765; the gate's pass at
+9 is the portal's soft rim moving at approach speed, checked by eye);
+`tools/voyage_sim.tscn` runs eight hours of Voyage headless a second at
+a time and checks the grammar (passages never twice running, port calls
+between 45 and 90 minutes, squalls in ether legs' middle thirds). One
+gap found and fixed: Voyage switched on in port used to shift straight
+into a leg and the port vanished; it casts off first now.
 
 Nothing in the shader may run on an accumulator it does not wrap
 exactly. Found 2026-09-10 as a frame cut in the nebula: the clouds ran

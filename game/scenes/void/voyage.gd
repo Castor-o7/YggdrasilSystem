@@ -71,6 +71,10 @@ func start() -> void:
 	if _drive.is_sequence():
 		_waiting = "passage"
 		print("voyage: waiting for the %s to settle" % _drive.gear_name())
+	elif _drive.gear == _drive.IDLE and _drive.berthed:
+		# Switched on in port: cast off first, or the port would simply
+		# vanish under the first leg (found in review, 2026-09-15).
+		_depart()
 	else:
 		_waiting = "first"
 		_leg_left = FIRST_LEG
