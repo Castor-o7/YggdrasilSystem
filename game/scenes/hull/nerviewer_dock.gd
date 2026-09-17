@@ -22,8 +22,11 @@ const AGENT := "edu.pdx.josh.nerviewer"
 const POLL := 0.5
 ## Stowed with the HUD: NERViewer is hidden as an app (what Cmd-H does)
 ## through System Events, and shown again when the HUD returns or the
-## cockpit quits. Applied once it is running, so a boot with the HUD
-## stowed hides it as soon as it comes up.
+## cockpit quits. What is compared is what macOS says (the workspace
+## helper reports each app's hidden state), not what the cockpit last asked
+## for: NERViewer can be hidden or shown behind its back (Cmd-H, a cockpit
+## that died), and on 2026-09-17 it sat hidden under a shown HUD, its slot
+## empty, until this was checked. Asked again every HIDE_RETRY until true.
 const HIDE := 'tell application "System Events" to set visible of (first process whose bundle identifier is "%s") to %s'
 
 var block: SigilBlock
@@ -31,8 +34,9 @@ var _timer := 0.0
 var _last_rect := Rect2i()
 var _launched := false
 var _dock_path := ""
+const HIDE_RETRY := 2.0
 var _want_hidden := false
-var _hidden := false
+var _hide_guard := 0.0
 
 
 func _ready() -> void:
@@ -49,9 +53,10 @@ func _process(dt: float) -> void:
 	block.bare = running()
 	# Failing: launched (or given up on) and still not here, past the grace.
 	block.failing = _launched and not running() and Workspace.clock > LAUNCH_GRACE * 2.0
-	if running() and _hidden != _want_hidden:
-		_hidden = _want_hidden
-		Osa.fire(HIDE % [BUNDLE_ID, "true" if _hidden else "false"])
+	_hide_guard -= POLL
+	if running() and Workspace.apps[BUNDLE_ID].hidden != _want_hidden and _hide_guard <= 0.0:
+		_hide_guard = HIDE_RETRY
+		Osa.fire(HIDE % [BUNDLE_ID, "true" if _want_hidden else "false"])
 	var rect := _screen_rect()
 	if rect != _last_rect:
 		_last_rect = rect
@@ -118,8 +123,7 @@ func set_hidden(on: bool) -> void:
 
 
 func release() -> void:
-	if _hidden:
-		_hidden = false
+	if running() and Workspace.apps[BUNDLE_ID].hidden:
 		Osa.fire(HIDE % [BUNDLE_ID, "false"])
 	if _dock_path != "" and FileAccess.file_exists(_dock_path):
 		DirAccess.remove_absolute(_dock_path)

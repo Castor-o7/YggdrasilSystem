@@ -36,7 +36,11 @@ func _process(dt: float) -> void:
 
 func _draw() -> void:
 	var win := get_window()
-	var scale := DisplayServer.screen_get_scale(win.current_screen)
+	# Godot measures the whole desktop at the largest scale of any screen
+	# attached, not at this screen's own: with a Retina panel beside a 1x
+	# monitor, points are doubled on both (found 2026-09-17, when a second
+	# monitor put every frame at half its place).
+	var scale := DisplayServer.screen_get_max_scale()
 	var origin := Vector2(win.position)
 	var xf := get_viewport().get_final_transform().affine_inverse()
 	var frame := Palette.color("frame")
@@ -50,7 +54,7 @@ func _draw() -> void:
 		var col: Color = gold if app.active else frame
 		var line_alpha := (0.55 if app.active else 0.3) * _alpha * breathe
 		for r in app.rects:
-			# points -> screen pixels -> this window -> canvas.
+			# points -> desktop units -> this window -> canvas.
 			var px := Rect2(r.position * scale, r.size * scale)
 			var tl: Vector2 = xf * (px.position - origin)
 			var br: Vector2 = xf * (px.end - origin)

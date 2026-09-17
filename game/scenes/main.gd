@@ -59,6 +59,7 @@ var _screen_timer := 0.0
 ## The shots tool flips modes for the camera; those must not become prefs.
 var persist := true
 var _help: HelpCard
+const HELP_ITEM := "Yggdrasil Keys"
 
 
 func _ready() -> void:
@@ -68,7 +69,7 @@ func _ready() -> void:
 	_help = HelpCard.new()
 	add_child(_help)
 	if NativeMenu.has_feature(NativeMenu.FEATURE_GLOBAL_MENU):
-		NativeMenu.add_item(NativeMenu.get_system_menu(NativeMenu.HELP_MENU_ID), "Yggdrasil Keys", func(_tag: Variant) -> void: _help.toggle())
+		NativeMenu.add_item(NativeMenu.get_system_menu(NativeMenu.HELP_MENU_ID), HELP_ITEM, _on_help_menu)
 	_load_prefs()
 	_apply_wallpaper()
 	_dock_blocks()
@@ -384,6 +385,20 @@ func _save_prefs() -> void:
 	for title in at:
 		cfg.set_value("hull", title, at[title])
 	cfg.save(PREFS)
+
+
+func _on_help_menu(_tag: Variant) -> void:
+	_help.toggle()
+
+
+## The menu item must go before the tree does: left in the system menu,
+## its callback keeps the app from finishing its quit (it hung, 2026-09-17).
+func _exit_tree() -> void:
+	if NativeMenu.has_feature(NativeMenu.FEATURE_GLOBAL_MENU):
+		var menu := NativeMenu.get_system_menu(NativeMenu.HELP_MENU_ID)
+		var idx := NativeMenu.find_item_index_with_text(menu, HELP_ITEM)
+		if idx >= 0:
+			NativeMenu.remove_item(menu, idx)
 
 
 func _notification(what: int) -> void:
