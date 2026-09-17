@@ -140,8 +140,9 @@ const ZEN_SET := 'tell application "System Events" to tell dock preferences to s
 
 ## Terminal dissolves in zen: its windows switch to the "Yggdrasil"
 ## profile, the default profile with a transparent background, so the
-## text sits on the void. tools/terminal_zen_profile.sh makes the profile;
-## the cockpit runs it once if the profile is missing.
+## text sits on the void. The bundled zenprof (helper/zenprof.swift) writes
+## the profile and Terminal imports it by opening it; the cockpit does
+## this once if the profile is missing.
 const TERM_PROFILE := "Yggdrasil"
 const TERM_GET := 'tell application "Terminal" to if it is running then get name of default settings'
 const TERM_HAS := 'tell application "Terminal" to exists settings set "%s"'
@@ -152,7 +153,19 @@ set startup settings to settings set "%s"
 set current settings of every tab of every window to settings set "%s"
 end if
 end tell'
+## Importing opens a window in the new profile; it is closed again.
+const TERM_CLOSE := 'tell application "Terminal"
+repeat with w in windows
+if name of current settings of selected tab of w is "%s" then
+close w saving no
+exit repeat
+end if
+end repeat
+exists settings set "%s"
+end tell'
+const TERM_FILE := "user://Yggdrasil.terminal"
 var _term_prev := ""
+var _term_source := ""
 
 
 func set_zen(on: bool) -> void:
@@ -171,8 +184,8 @@ func set_zen(on: bool) -> void:
 ## The profile to hand Terminal back. Never the zen profile itself: if zen
 ## was already in force when it was read (a restart with zen on, a crash),
 ## the earlier answer stands; failing that, the profile the zen profile
-## was built from (tools/terminal_zen_profile.sh records it in
-## terminal/.source); failing that, Terminal's own "Basic". Josh's default
+## was built from (zenprof names it; kept in prefs); failing that,
+## Terminal's own "Basic". Josh's default
 ## was Homebrew, and a guess of "Basic" lost it once (2026-09-10).
 func _remember_terminal(name: String) -> void:
 	if not name.is_empty() and name != TERM_PROFILE:
@@ -180,23 +193,30 @@ func _remember_terminal(name: String) -> void:
 		return
 	if not _term_prev.is_empty() and _term_prev != TERM_PROFILE:
 		return
-	var source := Paths.find_up("terminal/.source")
-	var from := FileAccess.get_file_as_string(source).strip_edges() if not source.is_empty() else ""
-	_term_prev = from if not from.is_empty() and from != TERM_PROFILE else "Basic"
+	_term_prev = _term_source if not _term_source.is_empty() and _term_source != TERM_PROFILE else "Basic"
 
 
 func _apply_terminal(on: bool) -> void:
 	var profile := TERM_PROFILE if on else _term_prev
 	if profile.is_empty():
 		return
-	if on and Osa.run(TERM_HAS % TERM_PROFILE) != "true":
-		var script := Paths.find_up("tools/terminal_zen_profile.sh")
-		if not script.is_empty():
-			OS.execute("/bin/sh", [script])
-		else:
-			print("zen: Terminal profile %s missing and no script to make it" % TERM_PROFILE)
-			return
+	if on and Osa.run(TERM_HAS % TERM_PROFILE) != "true" and not _make_terminal_profile():
+		return
 	Osa.fire(TERM_SET % [profile, profile, profile])
+
+
+func _make_terminal_profile() -> bool:
+	var out := []
+	var file := ProjectSettings.globalize_path(TERM_FILE)
+	if OS.execute(Paths.bundled("zenprof"), [file], out, true) != 0:
+		print("zen: could not make Terminal profile %s: %s" % [TERM_PROFILE, "".join(out).strip_edges()])
+		return false
+	var from := "".join(out).strip_edges()
+	if from != TERM_PROFILE:
+		_term_source = from
+	OS.execute("/usr/bin/open", [file])
+	OS.delay_msec(1500)
+	return Osa.run(TERM_CLOSE % [TERM_PROFILE, TERM_PROFILE]) == "true"
 
 
 static func _read_zen() -> Array:
@@ -327,6 +347,7 @@ func _load_prefs() -> void:
 	_tree_alpha = 1.0 if tree_shown else 0.0
 	var want_desktop := bool(cfg.get_value("look", "desktop", false))
 	_zen_prev = [bool(cfg.get_value("zen", "prev_dock", false)), bool(cfg.get_value("zen", "prev_menu", false))]
+	_term_source = str(cfg.get_value("zen", "source_terminal", ""))
 	_remember_terminal(str(cfg.get_value("zen", "prev_terminal", "")))
 	zen = bool(cfg.get_value("zen", "on", false))
 	if want_desktop:
@@ -351,6 +372,7 @@ func _save_prefs() -> void:
 	cfg.set_value("zen", "prev_dock", _zen_prev[0])
 	cfg.set_value("zen", "prev_menu", _zen_prev[1])
 	cfg.set_value("zen", "prev_terminal", _term_prev)
+	cfg.set_value("zen", "source_terminal", _term_source)
 	var at: Dictionary = hull.arrangement()
 	for title in at:
 		cfg.set_value("hull", title, at[title])
@@ -453,6 +475,6 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			# on transparent; the desktop behind it is not in the frame.
 			# For the real look, use the system screenshot (Cmd-Shift-3).
 			var stamp := Time.get_datetime_string_from_system().replace(":", "-")
-			var path := ProjectSettings.globalize_path("res://../screenshots/manual_%s.png" % stamp)
+			var path := OS.get_system_dir(OS.SYSTEM_DIR_PICTURES).path_join("Yggdrasil %s.png" % stamp)
 			get_viewport().get_texture().get_image().save_png(path)
 			print("saved ", path)

@@ -107,12 +107,13 @@ YggdrasilSystem/
   screenshots/               rendered by tools/shots.tscn; judged by eye
   helper/
     main.swift               yggapps: the workspace daemon (one file, no deps)
-    build.sh                 swiftc -O -o ../game/bin/yggapps main.swift
+    zenprof.swift            writes the "Yggdrasil" Terminal profile; shipped in the bundle
+    build.sh                 swiftc both into ../game/bin (yggapps, zenprof)
   tools/
-    build_app.sh             helper + export + bundle + re-sign -> dist/YggdrasilSystem.app
+    build_app.sh             helpers + export + bundle + arm64 thin + re-sign -> dist/YggdrasilSystem.app
+    install.sh               dist app -> /Applications; re-points the LaunchAgent
     launch_agent.sh          install|remove a LaunchAgent that starts it at login
     entitlements.plist       Apple Events automation, kept through the re-sign
-    terminal_zen_profile.*   builds and imports the "Yggdrasil" Terminal profile
   dist/                      built app (gitignored)
   game/
     project.godot            4.7, Forward+, transparent, canvas_items/expand,
@@ -165,9 +166,13 @@ YggdrasilSystem/
 Run: `/Applications/Godot.app/Contents/MacOS/Godot --path game`
 Shots: `... --path game res://tools/shots.tscn`
 Build: `tools/build_app.sh` (then `tools/launch_agent.sh install` to start
-it at login; NERViewer has the same pair). The exported app finds the
-helper beside its executable and NERViewer through `Paths.find_up`, so
-the two repos only have to stay siblings.
+it at login; NERViewer has the same pair). `tools/install.sh` copies the
+app to /Applications, after which it needs nothing from this repo: the
+helpers sit beside its executable, dev tools (`game/tools`) are left out
+of the export, the S-key screenshot goes to ~/Pictures, and NERViewer is
+found as a sibling (`Paths.find_up`) or at /Applications/NERViewer.app.
+The build is Apple Silicon only (the universal template thinned with
+lipo) and ad-hoc signed: on another Mac, right-click > Open the first time.
 
 Keys: B desktop mode, Z zen, H stow the HUD, T stow the tree, G garage
 mode, W fake wallpaper (windowed), S screenshot, Q quit, number keys the drive's gears: 1-5 states, 6-0 and -, = sequences (see
@@ -314,9 +319,11 @@ Z. Three things happen, all undone by Z again or by quitting:
 2. Terminal dissolves: every tab, and the default and startup profile,
    switch to the "Yggdrasil" settings set — the user's default profile
    with a fully transparent background and no blur — so the text sits on
-   the void. `tools/terminal_zen_profile.sh` builds and imports that
-   profile (Swift patches the archived NSColor's alpha; `open` imports
-   the .terminal file); the cockpit runs it if the profile is missing.
+   the void. The bundled `zenprof` builds that profile (Swift patches
+   the archived NSColor's alpha) into `user://` and `open` imports it;
+   the cockpit does this if the profile is missing, and keeps the name
+   of the profile it was built from in prefs. Nothing is compiled at
+   runtime, so zen works on a Mac with no developer tools.
    Terminal's title bar cannot be scripted away, so the cockpit covers
    it: scenes/void/cover.gd, drawn under the void, paints the wallpaper
    (read via System Events, aspect-fill mapped; sips converts formats

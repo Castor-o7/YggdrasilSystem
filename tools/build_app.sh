@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build dist/YggdrasilSystem.app: a self-contained app with the yggapps
-# helper inside it. Needs Godot 4.7.2 export templates (Editor > Manage
+# helper and zenprof (the Terminal profile maker) inside it. Needs Godot 4.7.2 export templates (Editor > Manage
 # Export Templates) and the command line tools for swiftc and codesign.
 # Zen drives System Events and Terminal through osascript, so the bundle
 # carries an Apple Events usage description (export preset) and the
@@ -19,8 +19,14 @@ rm -rf "$APP"
 mkdir -p dist
 "$GODOT" --path game --headless --export-release "macOS" "../$APP"
 
-echo "-- bundle helper"
-cp game/bin/yggapps "$APP/Contents/MacOS/yggapps"
+echo "-- bundle helpers"
+cp game/bin/yggapps game/bin/zenprof "$APP/Contents/MacOS/"
+
+echo "-- Apple Silicon only"
+# The official export templates are universal; dropping the Intel half
+# halves the app. (An arm64 preset would need a custom template.)
+EXE="$APP/Contents/MacOS/Yggdrasil System"
+lipo "$EXE" -thin arm64 -output "$EXE.arm64" && mv "$EXE.arm64" "$EXE"
 # Adding a binary invalidates the ad-hoc signature; sign again, keeping
 # the automation entitlement.
 codesign --force --deep --sign - --entitlements tools/entitlements.plist "$APP"

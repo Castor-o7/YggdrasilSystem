@@ -1,7 +1,10 @@
 // Make the "Yggdrasil" Terminal profile: the user's default profile with a
 // fully transparent background and no blur, so in zen the text sits on
 // the void. Writes the .terminal file given as the argument; `open`
-// imports it into Terminal.
+// imports it into Terminal. Prints the name of the profile it was built
+// from, which the cockpit keeps so it can hand Terminal back to it.
+// Built into game/bin/zenprof and shipped beside the executable: a Mac
+// the app lands on has no compiler.
 import AppKit
 
 let out = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "Yggdrasil.terminal"
@@ -32,4 +35,4 @@ profile["ProfileCurrentVersion"] = 2.07
 
 let data = try! PropertyListSerialization.data(fromPropertyList: profile, format: .xml, options: 0)
 try! data.write(to: URL(fileURLWithPath: out))
-print("wrote \(out) from profile \(defaultName)")
+print(defaultName)

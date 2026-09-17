@@ -62,8 +62,9 @@ func _ready() -> void:
 	_mat.set_shader_parameter("cool_color", Palette.color("cool"))
 	_mat.set_shader_parameter("alarm_color", Palette.color("alarm"))
 	resized.connect(_on_resized)
-	# Main is a Node2D, so this rect's full-frame anchors have nothing to
-	# bind to and it would stay at its saved 1440x900. Follow the viewport
+	# Main is a Node2D, so full-frame anchors would have nothing to bind
+	# to (and Godot warns when a stretched rect is sized by hand): the
+	# rect is anchored top-left at 1440x900 and follows the viewport
 	# instead, as the hull does; over the desktop with the Dock and menu
 	# bar showing the frame is wider than 16:10, and the void stopped 136
 	# design px short of the right edge (found by Josh 2026-09-11).

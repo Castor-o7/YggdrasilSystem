@@ -2,7 +2,8 @@
 # Start the Yggdrasil System at login, or stop doing so.
 #   tools/launch_agent.sh install
 #   tools/launch_agent.sh remove
-# Uses dist/YggdrasilSystem.app; run tools/build_app.sh first. Installing
+# Uses /Applications/YggdrasilSystem.app if tools/install.sh put it there, else
+# dist/YggdrasilSystem.app; run tools/build_app.sh first. Installing
 # also starts it now. NERViewer has its own agent (../NERViewer/tools);
 # with both installed the cockpit finds NERViewer already up and docks it,
 # and with only this one it launches NERViewer itself.
@@ -10,7 +11,9 @@ set -e
 cd "$(dirname "$0")/.."
 LABEL=edu.pdx.josh.yggdrasil
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-APP="$(pwd)/dist/YggdrasilSystem.app/Contents/MacOS/Yggdrasil System"
+BUNDLE="/Applications/YggdrasilSystem.app"
+[ -d "$BUNDLE" ] || BUNDLE="$(pwd)/dist/YggdrasilSystem.app"
+APP="$BUNDLE/Contents/MacOS/Yggdrasil System"
 
 case "$1" in
   install)

@@ -20,3 +20,12 @@ static func find_up(rel: String, max_depth := 8) -> String:
 				break
 			dir = parent
 	return ""
+
+
+## A binary the build makes: beside the executable in an exported app
+## (Contents/MacOS), in the project's bin/ in the editor.
+static func bundled(name: String) -> String:
+	var beside_exe := OS.get_executable_path().get_base_dir().path_join(name)
+	if FileAccess.file_exists(beside_exe):
+		return beside_exe
+	return ProjectSettings.globalize_path("res://bin/".path_join(name))
