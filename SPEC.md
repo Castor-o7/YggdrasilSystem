@@ -120,8 +120,6 @@ YggdrasilSystem/
                              theme font fonts/ui.tres
     export_presets.cfg       macOS preset for tools/build_app.sh; carries the
                              NSAppleEventsUsageDescription zen needs
-    fonts/the_one_ring.ttf   dingbat font: s,t,u,v are the Ring verse in Tengwar
-                             (freeware, non-commercial; see the .txt beside it)
     fonts/ui.tres            Avenir Next Condensed (system), letterspaced: every
                              label in both apps, via the theme and Palette.FONT
     fonts/display.tres       its Ultra Light cut, for the clock's numerals
@@ -149,9 +147,12 @@ YggdrasilSystem/
     scenes/blocks/           instruments that go inside blocks: clock
     scenes/hull/nerviewer_dock.gd  measures the NERViewer sigil, writes the
                              dock file, launches NERViewer, cleans up
-    scenes/hull/inscription.gd  Inscription: the verse strips rasterized near
-                             display size and laid along the middle ring as
-                             textured quads (replaced the text ring 2026-09-09)
+    scenes/hull/inscription.gd  Inscription: four lines of verse in the ship's
+                             own hanging script, made in code (no font file),
+                             rasterized once to textures and laid along the
+                             middle ring as textured quads. Replaced a freeware
+                             Tengwar face 2026-09-17 so the suite can be open
+                             source; VERSE at the top of the file is the text
     tools/shots.tscn/.gd     headless render: void_live (real apps, if the
                              helper runs), void_ground, void_overlay
     tools/bench.tscn/.gd     idle-cost bench: windowed, prefs untouched,

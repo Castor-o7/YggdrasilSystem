@@ -12,8 +12,8 @@ extends Control
 ## and that, not the void's shader, was most of its idle cost.
 
 const GLYPH_COUNT := 28
-## The middle ring carries the Ring verse in Tengwar (fonts/the_one_ring.ttf,
-## see Inscription), this tall. It replaced a ring of the title and
+## The middle ring carries a verse in the ship's own script (see
+## Inscription), this tall. It replaced a ring of the title and
 ## "yggdrasil" as text on 2026-09-09.
 const INSCRIPTION_HEIGHT := 9.0
 
@@ -27,10 +27,6 @@ const RINGS := [
 	{"inset": 38.0, "speed": 0.0933, "kind": "arcs"},
 ]
 const INNER_INSET := 46.0
-## The inscription's strips come from the font atlas, whose placement
-## could move if the text server repacked it; redraw that ring this often.
-const INSCRIPTION_REFRESH := 2.0
-
 ## The instrument's name. Not drawn (the disc stays bare); kept for the
 ## dock and for tools that need to tell blocks apart.
 @export var title := ""
@@ -68,7 +64,6 @@ var _inscription: Inscription
 var _t := 0.0
 var _rings: Node2D                 # breathes by modulate; sits under Content
 var _ring_nodes: Array[Node2D] = []   # RINGS in order, then the ticks, then the inner ring
-var _inscription_guard := 0.0
 
 
 func _ready() -> void:
@@ -82,6 +77,9 @@ func _ready() -> void:
 		var ring := Node2D.new()
 		ring.name = str(spec["kind"]).capitalize()
 		ring.draw.connect(_draw_ring.bind(ring, spec))
+		if spec["kind"] == "inscription":
+			# Its strips are textures several times taller than they show.
+			ring.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 		_rings.add_child(ring)
 		_ring_nodes.append(ring)
 	var ticks := Node2D.new()   # the arcs ring's ticks turn the other way
@@ -151,10 +149,6 @@ func _process(dt: float) -> void:
 	_ring_nodes[RINGS.size()].rotation = -_t * RINGS[2]["speed"]
 	_rings.modulate.a = 0.85 + 0.15 * Palette.breath()
 	_ring_nodes[1].modulate = Color.WHITE.lerp(Palette.color("core"), 0.8 * warp)
-	_inscription_guard -= dt
-	if _inscription_guard <= 0.0:
-		_inscription_guard = INSCRIPTION_REFRESH
-		_ring_nodes[1].queue_redraw()
 
 
 ## The disc: a faint fill so the instrument has a floor over the desktop.
