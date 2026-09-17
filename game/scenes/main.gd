@@ -7,7 +7,7 @@ extends Node2D
 ## bar auto-hide, so the cockpit has the whole screen; both come back
 ## when the mouse touches their edge), W toggles a fake wallpaper behind
 ## the void (windowed only, for judging the overlay look without leaving
-## the app), S saves a screenshot beside the project, Q or Escape quits.
+## the app), S saves a screenshot to ~/Pictures, Q or Escape quits.
 ## H stows the HUD (the hull, its instruments, NERViewer with them) while
 ## the void flies on; T stows the tree. Both persist.
 ## The number keys are the drive's gears: 1 to 5 states (idle, cruise,
@@ -16,7 +16,9 @@ extends Node2D
 ## only) and equals for the great ship (12). Backtick toggles Voyage,
 ## the autopilot (scenes/void/voyage.gd); tilde skips to its next
 ## movement; a gear key takes the helm back. See
-## scenes/void/drive.gd. Mode, zen, wallpaper, HUD and tree persist, the
+## scenes/void/drive.gd. ? shows the keys on a card (scenes/hull/
+## help_card.gd), as does Help > Yggdrasil Keys in the menu bar; a new key
+## belongs on that card too. Mode, zen, wallpaper, HUD and tree persist, the
 ## gear does not; zen restores the system's own settings when it ends or the
 ## cockpit quits.
 
@@ -56,12 +58,17 @@ var _zen_prev := [false, false]
 var _screen_timer := 0.0
 ## The shots tool flips modes for the camera; those must not become prefs.
 var persist := true
+var _help: HelpCard
 
 
 func _ready() -> void:
 	get_window().size_changed.connect(_update_passthrough)
 	Workspace.windows_moved.connect(_on_windows_moved)
 	hull.laid_out.connect(_update_passthrough)
+	_help = HelpCard.new()
+	add_child(_help)
+	if NativeMenu.has_feature(NativeMenu.FEATURE_GLOBAL_MENU):
+		NativeMenu.add_item(NativeMenu.get_system_menu(NativeMenu.HELP_MENU_ID), "Yggdrasil Keys", func(_tag: Variant) -> void: _help.toggle())
 	_load_prefs()
 	_apply_wallpaper()
 	_dock_blocks()
@@ -470,6 +477,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				void_layer.voyage.skip()
 			else:
 				void_layer.voyage.toggle()
+		KEY_SLASH, KEY_QUESTION:
+			_help.toggle()
 		KEY_S:
 			# Note: over the desktop this captures only what the app draws,
 			# on transparent; the desktop behind it is not in the frame.
