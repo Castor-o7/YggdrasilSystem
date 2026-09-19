@@ -116,6 +116,23 @@ func _on_windows_moved() -> void:
 		Pace.stir(0.75)
 
 
+## The rect the desktop window covers: the usable screen, less one point
+## at the bottom when that would be the whole screen. Godot on macOS
+## treats a borderless window that exactly covers its screen as
+## full-screen: it lifts it above the menu bar and hides it whenever
+## another app becomes active (and keeps doing so however the window is
+## resized after), so the cockpit vanished on a second screen with the
+## menu bar auto-hidden, where usable equals the screen. The built-in
+## screen never matched: the notch strip is always reserved. A point is
+## max-scale desktop units; one unit rounds back to the full size.
+func _desktop_rect(win: Window) -> Rect2i:
+	var usable := DisplayServer.screen_get_usable_rect(win.current_screen)
+	var screen := Rect2i(DisplayServer.screen_get_position(win.current_screen), DisplayServer.screen_get_size(win.current_screen))
+	if usable == screen:
+		usable.size.y -= ceili(DisplayServer.screen_get_max_scale())
+	return usable
+
+
 ## Desktop mode: borderless, transparent, on top, covering the usable screen.
 func set_desktop(on: bool) -> void:
 	desktop = on
@@ -124,7 +141,7 @@ func set_desktop(on: bool) -> void:
 	win.borderless = on
 	win.always_on_top = on
 	if on:
-		var usable := DisplayServer.screen_get_usable_rect(win.current_screen)
+		var usable := _desktop_rect(win)
 		win.position = usable.position
 		win.size = usable.size
 	else:
@@ -423,7 +440,7 @@ func _process(dt: float) -> void:
 	if desktop and _screen_timer <= 0.0:
 		_screen_timer = 1.0
 		var win := get_window()
-		var usable := DisplayServer.screen_get_usable_rect(win.current_screen)
+		var usable := _desktop_rect(win)
 		if win.position != usable.position or win.size != usable.size:
 			win.position = usable.position
 			win.size = usable.size
