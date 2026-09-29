@@ -14,7 +14,7 @@ extends RefCounted
 const FONT: FontFile = preload("res://fonts/the_one_ring.ttf")
 const LINES := "stuv"
 const PROBE := 100       # em used once to learn how tall a strip is per em
-const OVERSAMPLE := 2.0  # rasterize this many times taller than shown
+const OVERSAMPLE := 2.0  # the Mac: its Retina backing scale, so the strip rasterizes 1:1
 const SEGMENTS := 12     # quads per strip
 const GAP_MIN := 8.0     # least arc between strips, px
 
@@ -40,7 +40,7 @@ func _init() -> void:
 func draw(ci: CanvasItem, c: Vector2, radius: float, rot: float, height: float, col: Color) -> void:
 	if _ratio <= 0.0:
 		return
-	var em := maxi(8, roundi(height * OVERSAMPLE / _ratio))
+	var em := maxi(8, roundi(height * _oversample(ci) / _ratio))
 	var sz := Vector2i(em, 0)
 	# Fetch this frame's atlas placement for each strip.
 	var texs: Array[RID] = []
@@ -94,3 +94,13 @@ func draw(ci: CanvasItem, c: Vector2, radius: float, rot: float, height: float, 
 		a += da
 		ci.draw_circle(c + Vector2.from_angle(a + (gap * 0.5) / radius) * radius, 1.0, col)
 		a += gap / radius
+
+
+## Rasterize at the size the strip really shows at. On the Mac that is
+## OVERSAMPLE. Elsewhere it is the window's stretch (1.2 on a 1080p
+## screen): an 18-texel strip drawn at 10.8 px through a texture without
+## mipmaps thins the Tengwar hairlines.
+func _oversample(ci: CanvasItem) -> float:
+	if OS.get_name() == "macOS":
+		return OVERSAMPLE
+	return clampf(ci.get_viewport().get_final_transform().get_scale().y, 1.0, OVERSAMPLE)
