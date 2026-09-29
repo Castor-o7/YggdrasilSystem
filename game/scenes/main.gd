@@ -63,6 +63,14 @@ var _hull_prefs := {}
 ## Konsole windows seen while in zen: a new one is switched to the zen
 ## profile too (Linux; Terminal takes the startup profile on its own).
 var _zen_konsoles := 0
+## Sweeps still owed to a Konsole a zen sweep could not reach (no answer,
+## a window not on the bus yet), one each RESWEEP_SECS: past WEDGE_SECS,
+## so a peer that timed out is really asked again, and only a few, so one
+## that stays wedged does not cost a timeout every ten seconds all zen.
+const RESWEEP_SECS := Desk.WEDGE_SECS + 1.0
+const RESWEEPS := 3
+var _resweeps := 0
+var _resweep_timer := 0.0
 var _screen_timer := 0.0
 ## Quick rechecks still owed after a zen swap: the panels (or the Dock and
 ## menu bar) move a beat after we ask, and the window manager shoves an
@@ -189,6 +197,7 @@ func set_zen(on: bool) -> void:
 		# belongs to the cockpit holding the lock.
 		print("cockpit: another cockpit has the helm; zen is its to change")
 		return
+	Desk.ask_again()
 	if on and not zen:
 		# A failed read never replaces an answer we have: that would hide
 		# the chrome with nothing recorded to hand back.
@@ -236,8 +245,9 @@ func _remember_terminal(name: String) -> void:
 
 func _apply_terminal(on: bool) -> void:
 	var profile := Desk.TERM_PROFILE if on else _term_prev
+	_resweeps = 0
 	if not profile.is_empty() and (not on or Desk.terminal_ready()):
-		Desk.terminal_set(profile)
+		_owe_sweep(not Desk.terminal_set(profile) and on)
 	if not on:
 		Desk.terminal_unstick(_terminal_file())
 
@@ -248,6 +258,8 @@ func _remember_terminal_file() -> void:
 	if not Desk.LINUX:
 		return
 	var file := Desk.terminal_default_file()
+	if Desk.read_failed():
+		return  # no answer is not "built-in", which would lose his default
 	if file != Desk.TERM_PROFILE + ".profile":
 		_term_prev_file = file
 		_term_file_known = true
@@ -268,8 +280,31 @@ func _on_workspace_changed() -> void:
 	var app = Workspace.apps.get("org.kde.konsole")
 	var n: int = app.windows if app != null and app.alive else 0
 	if zen and n > _zen_konsoles:
-		Desk.terminal_set(Desk.TERM_PROFILE)
+		_owe_sweep(not Desk.terminal_set(Desk.TERM_PROFILE))
 	_zen_konsoles = n
+
+
+func _owe_sweep(owed: bool) -> void:
+	if owed:
+		_resweeps = RESWEEPS
+		_resweep_timer = RESWEEP_SECS
+
+
+## A sweep owed (see RESWEEP_SECS) is paid on its own clock: the window
+## count that prompted it may not change again.
+func _resweep(dt: float) -> void:
+	if _resweeps <= 0:
+		return
+	if not zen:
+		_resweeps = 0
+		return
+	_resweep_timer -= dt
+	if _resweep_timer > 0.0:
+		return
+	_resweeps -= 1
+	_resweep_timer = RESWEEP_SECS
+	if Desk.terminal_set(Desk.TERM_PROFILE):
+		_resweeps = 0
 
 
 ## The lock is the pid of the cockpit holding it and its program (godot,
@@ -344,6 +379,7 @@ func _refit_soon() -> void:
 func _release_zen() -> void:
 	if not persist:
 		return  # never took the desk, so has nothing to hand back
+	Desk.ask_again()
 	if zen:
 		_desk_zen(false)
 		if not _term_prev.is_empty():
@@ -523,6 +559,7 @@ func _notification(what: int) -> void:
 func _process(dt: float) -> void:
 	_hud_alpha = move_toward(_hud_alpha, 1.0 if hud else 0.0, dt / STOW)
 	_warp(dt)
+	_resweep(dt)
 	hull.modulate.a = _hud_alpha
 	hull.visible = _hud_alpha > 0.0
 	_tree_alpha = move_toward(_tree_alpha, 1.0 if tree_shown else 0.0, dt / STOW)

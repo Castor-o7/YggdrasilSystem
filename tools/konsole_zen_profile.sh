@@ -16,6 +16,14 @@ ZEN=Yggdrasil
 data=${XDG_DATA_HOME:-$HOME/.local/share}
 out="$data/konsole"
 mkdir -p "$out"
+# Both files are built under hidden temporary names and renamed into place
+# last, the scheme before the profile: a rename in one directory is
+# atomic, so a run cut short (a failure under set -e, the cockpit's
+# timeout) never leaves a half-built profile that looks finished.
+prof_tmp="$out/.$ZEN.profile.tmp"
+scheme_tmp="$out/.$ZEN.colorscheme.tmp"
+trap 'rm -f "$prof_tmp" "$scheme_tmp"' EXIT
+trap 'exit 143' TERM INT HUP  # sh runs the EXIT trap on exit, not on a signal
 
 # The first konsole/<file> along the XDG data dirs, user's first.
 find_data() {
@@ -53,32 +61,34 @@ if [ -n "$src_path" ]; then
 	src_name=$(ini "$src_path" General Name)
 	[ -n "$src_name" ] || src_name=$(basename "$src_path" .profile)
 	scheme=$(ini "$src_path" Appearance ColorScheme)
-	cp "$src_path" "$out/$ZEN.profile"
+	cp "$src_path" "$prof_tmp"
 else
 	# No profile file: Konsole is on its built-in profile.
 	src_name="Built-in"
 	scheme=""
-	printf '[General]\nParent=FALLBACK/\n' > "$out/$ZEN.profile"
+	printf '[General]\nParent=FALLBACK/\n' > "$prof_tmp"
 fi
 [ -n "$scheme" ] || scheme=Breeze
 # Remember which profile the zen profile is built from, so the cockpit can
 # hand Konsole back to it even if its own memory of it is lost.
 [ "$src_name" = "$ZEN" ] || echo "$src_name" > terminal/.source
 
-kwriteconfig6 --file "$out/$ZEN.profile" --group General --key Name "$ZEN"
-kwriteconfig6 --file "$out/$ZEN.profile" --group Appearance --key ColorScheme "$ZEN"
+kwriteconfig6 --file "$prof_tmp" --group General --key Name "$ZEN"
+kwriteconfig6 --file "$prof_tmp" --group Appearance --key ColorScheme "$ZEN"
 # No scrollbar in zen: nothing but the text on the void (2 = hidden).
-kwriteconfig6 --file "$out/$ZEN.profile" --group Scrolling --key ScrollBarPosition 2
+kwriteconfig6 --file "$prof_tmp" --group Scrolling --key ScrollBarPosition 2
 
 scheme_path=$(find_data "$scheme.colorscheme" || true)
 if [ -n "$scheme_path" ] && [ "$scheme" != "$ZEN" ]; then
-	cp "$scheme_path" "$out/$ZEN.colorscheme"
+	cp "$scheme_path" "$scheme_tmp"
 else
 	# Breeze is compiled into Konsole, with no file to copy: its two
 	# ground colours are enough, the palette falls back to Konsole's own.
-	printf '[Background]\nColor=35,38,39\n\n[Foreground]\nColor=252,252,252\n' > "$out/$ZEN.colorscheme"
+	printf '[Background]\nColor=35,38,39\n\n[Foreground]\nColor=252,252,252\n' > "$scheme_tmp"
 fi
-kwriteconfig6 --file "$out/$ZEN.colorscheme" --group General --key Description "$ZEN"
-kwriteconfig6 --file "$out/$ZEN.colorscheme" --group General --key Opacity 0
-kwriteconfig6 --file "$out/$ZEN.colorscheme" --group General --key Blur false
+kwriteconfig6 --file "$scheme_tmp" --group General --key Description "$ZEN"
+kwriteconfig6 --file "$scheme_tmp" --group General --key Opacity 0
+kwriteconfig6 --file "$scheme_tmp" --group General --key Blur false
+mv -f "$scheme_tmp" "$out/$ZEN.colorscheme"
+mv -f "$prof_tmp" "$out/$ZEN.profile"
 echo "$out/$ZEN.profile (from $src_name, scheme $scheme)"

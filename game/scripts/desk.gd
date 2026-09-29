@@ -11,7 +11,9 @@
 ## straight to the program, so a whole script goes as one argument (see
 ## _run). Every Linux call is blocking but short (about 10 ms each on
 ## Josh's machine), which also lets the quit path finish its restores
-## before the process ends.
+## before the process ends; and bounded, so a peer that stops answering
+## (a busy Konsole, plasmashell restarting) holds a frame at most 1.5 s
+## for a question, 4 s for a change, not qdbus's own 25 s (see _run).
 
 const Paths := preload("res://scripts/paths.gd")
 
@@ -63,11 +65,11 @@ static func zen_apply(on: bool, prev: Dictionary) -> void:
 		Osa.fire(ZEN_SET % [str(dock).to_lower(), str(menu).to_lower()])
 	elif LINUX:
 		if on:
-			_plasma(PANELS_HIDE)
+			_plasma(PANELS_HIDE, WRITE_SECS)
 		else:
 			var want: Dictionary = prev.get("panels", {})
 			if not want.is_empty():
-				_plasma(PANELS_SET % JSON.stringify(want))
+				_plasma(PANELS_SET % JSON.stringify(want), WRITE_SECS)
 		_panels_at = -1  # the struts just changed; usable_rect asks again
 
 
@@ -148,10 +150,14 @@ static func terminal_current() -> String:
 
 
 ## The last resort for the profile to hand back: Terminal's own "Basic";
-## Konsole's configured default profile, else its built-in one.
+## Konsole's configured default profile, else its built-in one; "" when
+## konsolerc could not be read, which is no answer: a guess of built-in
+## would hand every window back the wrong profile.
 static func terminal_fallback() -> String:
 	if LINUX:
-		var file := _run("kreadconfig6", ["--file", "konsolerc", "--group", "Desktop Entry", "--key", "DefaultProfile"])
+		var file := terminal_default_file()
+		if read_failed():
+			return ""
 		var name := file.trim_suffix(".profile")
 		return name if not name.is_empty() and name != TERM_PROFILE else "Built-in"
 	return "Basic"
@@ -162,11 +168,13 @@ static func terminal_fallback() -> String:
 ## no Konsole running when zen ends (every window closed first, or the
 ## cockpit killed mid-zen), every Konsole opened after would start
 ## dissolved. The entry as it stands: "" is Konsole's built-in profile
-## (no key at all).
+## (no key at all), and "" too when the read failed: read_failed tells
+## them apart. A local file with no peer to wedge, so it gets a write's
+## bound: a read cut short on a loaded box must not pass for "built-in".
 static func terminal_default_file() -> String:
 	if not LINUX:
 		return ""
-	return _run("kreadconfig6", ["--file", "konsolerc", "--group", "Desktop Entry", "--key", "DefaultProfile"])
+	return _run("kreadconfig6", ["--file", "konsolerc", "--group", "Desktop Entry", "--key", "DefaultProfile"], WRITE_SECS)
 
 
 ## Hand konsolerc back `file` ("" for the built-in profile), but only if
@@ -180,7 +188,7 @@ static func terminal_unstick(file: String) -> void:
 		args.append("--delete")
 	else:
 		args.append(file)
-	_run("kwriteconfig6", args)
+	_run("kwriteconfig6", args, WRITE_SECS)
 
 
 ## The file a Konsole profile named `name` lives in (the user's profiles,
@@ -242,31 +250,43 @@ static func terminal_prepare() -> void:
 ## DBus API is disabled") yet applies it; the answer is ignored. A
 ## Konsole that predates the profile file does not know it, and is named
 ## once so the reason it stayed opaque is on record.
-static func terminal_set(profile: String) -> void:
+## False when going to zen left a Konsole unasked (no answer, or a window
+## not on the bus yet), so the caller can sweep again later.
+static func terminal_set(profile: String) -> bool:
 	if MAC:
 		Osa.fire(TERM_SET % [profile, profile, profile])
-		return
+		return true
 	if not LINUX:
-		return
+		return true
+	var all := true
 	for svc in _konsoles():
 		var windows := _objects(svc, "/Windows/")
-		if profile == TERM_PROFILE and not windows.is_empty() and svc not in _stale_warned:
+		if profile == TERM_PROFILE and windows.is_empty():
+			all = false  # still starting, or wedged: its listing said nothing
+			continue
+		if profile == TERM_PROFILE and svc not in _stale_warned and svc not in _knows_zen:
 			var known := _qdbus([svc, windows[0], "org.kde.konsole.Window.profileList"])
+			if known.is_empty():
+				all = false
+				continue  # no answer (busy, just gone) says nothing; next time
 			if TERM_PROFILE not in known.split("\n"):
 				_stale_warned.append(svc)
 				print("zen: %s started before the %s profile existed; restart it to dissolve" % [svc, TERM_PROFILE])
 				continue
+			_knows_zen.append(svc)  # and always will, so it is asked once
 		var back := profile != TERM_PROFILE
 		for obj in windows:
 			if not back or _qdbus([svc, obj, "org.kde.konsole.Window.defaultProfile"]) == TERM_PROFILE:
-				_qdbus([svc, obj, "org.kde.konsole.Window.setDefaultProfile", profile])
+				_qdbus([svc, obj, "org.kde.konsole.Window.setDefaultProfile", profile], WRITE_SECS)
 		for obj in _objects(svc, "/Sessions/"):
 			if not back or _qdbus([svc, obj, "org.kde.konsole.Session.profile"]) == TERM_PROFILE:
-				_qdbus([svc, obj, "org.kde.konsole.Session.setProfile", profile])
+				_qdbus([svc, obj, "org.kde.konsole.Session.setProfile", profile], WRITE_SECS)
 		_toolbars(svc, not back)
+	return all
 
 
 static var _stale_warned: PackedStringArray = []
+static var _knows_zen: PackedStringArray = []
 
 
 ## Terminal.app has no toolbar; Konsole does, an opaque strip (New Tab,
@@ -293,26 +313,41 @@ static func _toolbars(svc: String, hide: bool) -> void:
 			if _shown_toolbars.has(key):
 				continue  # already put away; a second pass must not forget them
 			var shown := PackedStringArray()
-			for bar in _qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.toolBars"]).split("\n", false):
+			for bar in _bar_names(svc, win):
 				if _qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.isToolBarVisible", bar]) == "true":
 					shown.append(bar)
-					_qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.setToolBarVisible", bar, "false"])
+					_qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.setToolBarVisible", bar, "false"], WRITE_SECS)
 			_shown_toolbars[key] = shown
 			# trigger, not setChecked: the menu bar follows the action's
 			# triggered signal, which setChecked does not send.
 			if _menubar_shown(svc, win):
-				_qdbus([svc, win + MENUBAR, "org.qtproject.Qt.QAction.trigger"])
+				_qdbus([svc, win + MENUBAR, "org.qtproject.Qt.QAction.trigger"], WRITE_SECS)
 				_shown_menubars[key] = true
 		else:
 			var bars = _shown_toolbars.get(key, null)
 			if bars == null:
-				bars = _qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.toolBars"]).split("\n", false)
+				bars = _bar_names(svc, win)
 			for bar in bars:
-				_qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.setToolBarVisible", bar, "true"])
+				_qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.setToolBarVisible", bar, "true"], WRITE_SECS)
 			_shown_toolbars.erase(key)
 			if _shown_menubars.has(key) and not _menubar_shown(svc, win):
-				_qdbus([svc, win + MENUBAR, "org.qtproject.Qt.QAction.trigger"])
+				_qdbus([svc, win + MENUBAR, "org.qtproject.Qt.QAction.trigger"], WRITE_SECS)
 			_shown_menubars.erase(key)
+
+
+## A window's toolbars by name, asked once: a window keeps the ones it
+## was made with.
+static var _bars := {}
+
+
+static func _bar_names(svc: String, win: String) -> PackedStringArray:
+	var key := svc + " " + win
+	if not _bars.has(key):
+		var names := _qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.toolBars"]).split("\n", false)
+		if names.is_empty():
+			return names  # no answer is not an answer; ask next time
+		_bars[key] = names
+	return _bars[key]
 
 
 static func _menubar_shown(svc: String, win: String) -> bool:
@@ -325,7 +360,12 @@ static func _make_profile(rel: String) -> bool:
 		print("zen: %s profile missing and no %s to make it" % [TERM_PROFILE, rel])
 		return false
 	if LINUX:
-		_run("/bin/sh", [script])
+		# The script renames the profile into place last, so a run cut
+		# short leaves none; say so rather than trust it.
+		_run("/bin/sh", [script], PROFILE_SECS)
+		if _timed_out or not FileAccess.file_exists(_konsole_profile_path()):
+			print("zen: %s did not finish; no %s profile" % [rel, TERM_PROFILE])
+			return false
 	else:
 		OS.execute("/bin/sh", [script])
 	return true
@@ -379,10 +419,10 @@ static func borders(bare: bool) -> void:
 	_bare = bare
 	if first and not bare and not _kwin_loaded(BORDERS_PLUGIN):
 		return
-	_kwin_unload(BORDERS_PLUGIN)
 	if bare:
 		_kwin_run(BORDERS_JS, BORDERS_PLUGIN)
 	else:
+		_kwin_unload(BORDERS_PLUGIN)
 		# It unloads itself once it has run: KWin reads a script's file on
 		# a worker thread after run(), so unloading it from here at once
 		# could beat it to the windows.
@@ -400,20 +440,21 @@ static func _kwin_run(js: String, plugin: String) -> void:
 		return
 	f.store_string(js)
 	f.close()
-	var id := _qdbus(["org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", path, plugin])
+	var id := _qdbus(["org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", path, plugin], WRITE_SECS)
 	if not id.is_valid_int() or int(id) < 0:
 		push_warning("KWin would not load %s (%s)" % [plugin, id])
 		return
-	_qdbus(["org.kde.KWin", "/Scripting/Script" + id, "org.kde.kwin.Script.run"])
+	_qdbus(["org.kde.KWin", "/Scripting/Script" + id, "org.kde.kwin.Script.run"], WRITE_SECS)
 
 
 static func _kwin_loaded(plugin: String) -> bool:
 	return _qdbus(["org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.isScriptLoaded", plugin]) == "true"
 
 
+## Unasked: KWin answers false for a name it has not loaded, so asking
+## first (isScriptLoaded) would only cost a spawn.
 static func _kwin_unload(plugin: String) -> void:
-	if _kwin_loaded(plugin):
-		_qdbus(["org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", plugin])
+	_qdbus(["org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", plugin], WRITE_SECS)
 
 
 # --- The usable screen ----------------------------------------------------------
@@ -468,27 +509,90 @@ static func _panels(fresh: bool) -> Array:
 
 # --- D-Bus plumbing (Linux) -----------------------------------------------------
 
+## How long a call may take before it is given up: a question (a getter,
+## a listing) READ_SECS, anything that changes the desk WRITE_SECS, and
+## the zen profile script PROFILE_SECS. A peer that does not answer is
+## sent SIGTERM then, and SIGKILL KILL_GRACE later, so the worst a read
+## costs is 1.5 s and a write 4 s. A healthy answer takes about 10 ms.
+const READ_SECS := 1.0
+const WRITE_SECS := 3.5
+const PROFILE_SECS := 10.0
+const KILL_GRACE := 0.5
+## A peer that timed out is left alone for WEDGE_SECS (its calls answer
+## "" at once), so a wedged Konsole costs one timeout, not one per call.
+## ask_again forgets them: each Z press, and the quit, gives every peer
+## one more chance.
+const WEDGE_SECS := 10.0
+static var _wedged := {}
+static var _timed_out := false
+static var _failed := false
 static var _qdbus_bin := ""
+static var _timeout_bin = null
 
 
 ## The Qt 6 qdbus: qdbus6 (Arch, Manjaro: qt6-tools), qdbus-qt6 (Fedora),
-## else plain qdbus.
-static func _qdbus(args: Array) -> String:
+## else plain qdbus. `secs`: READ_SECS for a question, WRITE_SECS for a
+## change.
+static func _qdbus(args: Array, secs := READ_SECS) -> String:
 	if _qdbus_bin.is_empty():
 		_qdbus_bin = "qdbus"
 		for bin in ["qdbus6", "qdbus-qt6"]:
-			for dir in OS.get_environment("PATH").split(":", false):
-				if _qdbus_bin == "qdbus" and FileAccess.file_exists(dir.path_join(bin)):
-					_qdbus_bin = dir.path_join(bin)
-	return _run(_qdbus_bin, args)
+			if _qdbus_bin == "qdbus":
+				var found := _which(bin)
+				if not found.is_empty():
+					_qdbus_bin = found
+	var peer: String = args[0] if not args.is_empty() else ""
+	if _wedged.has(peer):
+		if Time.get_ticks_msec() - int(_wedged[peer]) < WEDGE_SECS * 1000.0:
+			_failed = true
+			return ""
+		_wedged.erase(peer)
+	var out := _run(_qdbus_bin, args, secs)
+	if _timed_out:
+		_wedged[peer] = Time.get_ticks_msec()
+		var asked: String = args[2] if args.size() > 2 else "its listing"
+		print("desk: %s did not answer %s; left alone for %d s" % [peer if not peer.is_empty() else "the bus", asked, int(WEDGE_SECS)])
+	return out
+
+
+## A Z press, or the quit: every peer is asked again (see WEDGE_SECS).
+static func ask_again() -> void:
+	_wedged.clear()
+
+
+## Whether the last call failed (timed out, or exited non-zero), which
+## its "" alone does not say.
+static func read_failed() -> bool:
+	return _failed
+
+
+static func _which(bin: String) -> String:
+	for dir in OS.get_environment("PATH").split(":", false):
+		if FileAccess.file_exists(dir.path_join(bin)):
+			return dir.path_join(bin)
+	return ""
 
 
 ## Run and wait; stdout stripped, or "" on failure. Argv goes to the
 ## program untouched (see the top of this file). At the end of a pipe
 ## Godot's FileAccess does not set eof_reached, it reports a read error,
 ## so either ends the read.
-static func _run(bin: String, args: Array) -> String:
-	var proc := OS.execute_with_pipe(bin, PackedStringArray(args))
+## Bounded by coreutils timeout, argv again, which signals its whole
+## process group (a script's children too), so the pipe closes by
+## `secs` + KILL_GRACE whatever the program does. It exits 124 when
+## SIGTERM sufficed; when SIGKILL was needed it goes down with its group,
+## which Godot reports as the signal, 9. Either sets _timed_out. The
+## child is always reaped: OS.kill waits for one that outlives the pipe.
+static func _run(bin: String, args: Array, secs := READ_SECS) -> String:
+	if _timeout_bin == null:
+		_timeout_bin = _which("timeout")
+	var argv := PackedStringArray(args)
+	if not _timeout_bin.is_empty():
+		argv = PackedStringArray(["-k", str(KILL_GRACE), str(secs), bin]) + argv
+		bin = _timeout_bin
+	_timed_out = false
+	_failed = true
+	var proc := OS.execute_with_pipe(bin, argv)
 	if proc.is_empty():
 		return ""
 	var pipe: FileAccess = proc["stdio"]
@@ -500,24 +604,48 @@ static func _run(bin: String, args: Array) -> String:
 		lines.append(line)
 	pipe.close()
 	(proc["stderr"] as FileAccess).close()
-	# Reap it (the pipe is closed, so it is exiting if not gone).
+	# Reap it (the pipe is closed, so it is exiting if not gone), in fine
+	# steps: timeout exits a beat after its child, and 2 ms steps cost
+	# every call about that much.
 	var code := -1
-	for _i in 50:
+	for _i in 500:
 		code = OS.get_process_exit_code(proc["pid"])
 		if code != -1:
 			break
-		OS.delay_msec(2)
+		OS.delay_usec(200)
+	if code == -1:
+		OS.kill(proc["pid"])
+	_timed_out = not _timeout_bin.is_empty() and (code == 124 or code == 9)
+	_failed = code != 0
 	return "\n".join(lines).strip_edges() if code == 0 else ""
 
 
-static func _plasma(js: String) -> String:
-	return _qdbus(["org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript", js])
+static func _plasma(js: String, secs := READ_SECS) -> String:
+	return _qdbus(["org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript", js], secs)
+
+
+## The bus's names ("") or a Konsole's objects. A Z press asks for the
+## same listings over and over (terminal_current, then each step of
+## terminal_set), and nothing the cockpit does adds or takes objects, so
+## each is asked once a frame.
+static var _trees := {}
+static var _trees_frame := -1
+
+
+static func _tree(svc: String) -> String:
+	var frame := Engine.get_process_frames()
+	if frame != _trees_frame:
+		_trees.clear()
+		_trees_frame = frame
+	if not _trees.has(svc):
+		_trees[svc] = _qdbus([svc] if not svc.is_empty() else [])
+	return _trees[svc]
 
 
 ## Every running Konsole process: each owns org.kde.konsole-<pid>.
 static func _konsoles() -> PackedStringArray:
 	var found := PackedStringArray()
-	for line in _qdbus([]).split("\n"):
+	for line in _tree("").split("\n"):
 		var name := line.strip_edges()
 		if name.begins_with("org.kde.konsole-"):
 			found.append(name)
@@ -528,7 +656,7 @@ static func _konsoles() -> PackedStringArray:
 ## /konsole/MainWindow_N.
 static func _objects(svc: String, prefix: String) -> PackedStringArray:
 	var found := PackedStringArray()
-	for line in _qdbus([svc]).split("\n"):
+	for line in _tree(svc).split("\n"):
 		var path := line.strip_edges()
 		if path.begins_with(prefix) and path.trim_prefix(prefix).is_valid_int():
 			found.append(path)
