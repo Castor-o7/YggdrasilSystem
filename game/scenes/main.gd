@@ -70,9 +70,17 @@ const SCREEN_BURST := 4
 const SCREEN_BURST_GAP := 0.15
 ## The shots tool flips modes for the camera; those must not become prefs.
 var persist := true
+## One cockpit flies the desk. A second one (editor Play beside the
+## running app, a headless check) would take over zen, the borders and
+## Konsole, and on quit hand them all back and undock NERViewer from under
+## the live one. It runs with persist off instead: it only watches.
+const LOCK := "user://cockpit.pid"
+var _lock_held := false
 
 
 func _ready() -> void:
+	if persist and not _take_lock():
+		persist = false
 	get_window().size_changed.connect(_update_passthrough)
 	Workspace.windows_moved.connect(_on_windows_moved)
 	hull.laid_out.connect(_update_passthrough)
@@ -154,7 +162,8 @@ func set_desktop(on: bool) -> void:
 func _zen_paint() -> void:
 	frames.set_shown(zen and desktop)
 	cover.set_shown(zen and desktop)
-	Desk.borders(zen and desktop)
+	if persist:  # a bystander or a tool leaves the live cockpit's borders be
+		Desk.borders(zen and desktop)
 
 
 ## Zen: the Dock and the menu bar (macOS) or the Plasma panels (Linux)
@@ -163,12 +172,24 @@ func _zen_paint() -> void:
 ## The terminal's zen profile is Desk.TERM_PROFILE; the one to go back to
 ## is remembered here and in prefs.
 var _term_prev := ""
+## Linux: konsolerc's DefaultProfile entry from before zen (a file name,
+## "" for the built-in profile), so zen's profile never outlives zen
+## there (see Desk.terminal_default_file). Unknown until read at zen-on
+## or loaded from prefs.
+var _term_prev_file := ""
+var _term_file_known := false
 
 
 func set_zen(on: bool) -> void:
+	if not persist:
+		# Zen is the desk's (panels, Konsole, konsolerc), and the desk
+		# belongs to the cockpit holding the lock.
+		print("cockpit: another cockpit has the helm; zen is its to change")
+		return
 	if on and not zen:
 		_zen_prev = Desk.zen_read()
 		_remember_terminal(Desk.terminal_current())
+		_remember_terminal_file()
 	zen = on
 	_zen_paint()
 	Desk.zen_apply(on, _zen_prev)
@@ -197,11 +218,27 @@ func _remember_terminal(name: String) -> void:
 
 func _apply_terminal(on: bool) -> void:
 	var profile := Desk.TERM_PROFILE if on else _term_prev
-	if profile.is_empty():
+	if not profile.is_empty() and (not on or Desk.terminal_ready()):
+		Desk.terminal_set(profile)
+	if not on:
+		Desk.terminal_unstick(_terminal_file())
+
+
+## Linux: read konsolerc's default at zen-on. Already the zen profile (a
+## restart with zen on, a crash) means the earlier answer stands.
+func _remember_terminal_file() -> void:
+	if not Desk.LINUX:
 		return
-	if on and not Desk.terminal_ready():
-		return
-	Desk.terminal_set(profile)
+	var file := Desk.terminal_default_file()
+	if file != Desk.TERM_PROFILE + ".profile":
+		_term_prev_file = file
+		_term_file_known = true
+
+
+## The konsolerc entry to hand back: as read, else found from the
+## profile's name (prefs from before it was read).
+func _terminal_file() -> String:
+	return _term_prev_file if _term_file_known else Desk.terminal_profile_file(_term_prev)
 
 
 ## A Konsole window opened in zen starts in the default profile (a new
@@ -217,6 +254,67 @@ func _on_workspace_changed() -> void:
 	_zen_konsoles = n
 
 
+## The lock is the pid of the cockpit holding it and its program (godot,
+## or the exported binary). A pid that is gone (a crash, a kill) frees it;
+## so does one reused by some other program.
+func _take_lock() -> bool:
+	if DisplayServer.get_name() == "headless":
+		print("cockpit: headless; leaving the desk alone")
+		return false
+	var held := FileAccess.get_file_as_string(LOCK).split("\n") if FileAccess.file_exists(LOCK) else PackedStringArray()
+	var other := int(held[0].strip_edges()) if held.size() > 0 else 0
+	var program := held[1].strip_edges() if held.size() > 1 else ""
+	if other > 0 and other != OS.get_process_id() and _cockpit_alive(other, program):
+		print("cockpit: pid %d has the helm; this one only watches" % other)
+		return false
+	var f := FileAccess.open(LOCK, FileAccess.WRITE)
+	if f == null:
+		return true  # no lock to be had; fly anyway, as before there was one
+	f.store_string("%d\n%s\n" % [OS.get_process_id(), OS.get_executable_path().get_file()])
+	f.close()
+	_lock_held = true
+	return true
+
+
+func _drop_lock() -> void:
+	if not _lock_held:
+		return
+	_lock_held = false
+	if int(FileAccess.get_file_as_string(LOCK).split("\n")[0].strip_edges()) == OS.get_process_id():
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(LOCK))
+
+
+## Alive, and still the program that took the lock, so a recycled pid
+## (after a crash, a reboot) does not hold the helm forever.
+static func _cockpit_alive(pid: int, program: String) -> bool:
+	var cmd := _command_line(pid)
+	return not cmd.is_empty() and (program.is_empty() or program in cmd)
+
+
+## A process's whole command line, "" if there is no such process.
+## Linux: /proc through a handle (proc files report a length of 0, so
+## get_file_as_string reads nothing). macOS: ps, which answers for any
+## process (OS.is_process_running only knows our own children).
+static func _command_line(pid: int) -> String:
+	if Desk.LINUX:
+		var f := FileAccess.open("/proc/%d/cmdline" % pid, FileAccess.READ)
+		if f == null:
+			return ""
+		var raw := f.get_buffer(4096)
+		for i in raw.size():
+			if raw[i] == 0:
+				raw[i] = 32  # argv is NUL-separated
+		return raw.get_string_from_utf8().strip_edges()
+	var out := []
+	if OS.execute("/bin/ps", ["-p", str(pid), "-o", "command="], out) != 0 or out.is_empty():
+		return ""
+	return str(out[0]).strip_edges()
+
+
+func _exit_tree() -> void:
+	_drop_lock()
+
+
 ## Refit now rather than on the next one-second check, then a few more
 ## times while the desktop settles.
 func _refit_soon() -> void:
@@ -226,10 +324,13 @@ func _refit_soon() -> void:
 
 ## Leaving zen without touching the prefs: the quit path.
 func _release_zen() -> void:
+	if not persist:
+		return  # never took the desk, so has nothing to hand back
 	if zen:
 		Desk.zen_apply(false, _zen_prev)
 		if not _term_prev.is_empty():
 			Desk.terminal_set(_term_prev)
+		Desk.terminal_unstick(_terminal_file())
 	Desk.borders(false)
 
 
@@ -347,6 +448,9 @@ func _load_prefs() -> void:
 	var want_desktop := bool(cfg.get_value("look", "desktop", false))
 	_zen_prev = Desk.zen_load(cfg)
 	_remember_terminal(str(cfg.get_value("zen", "prev_terminal", "")))
+	if cfg.has_section_key("zen", "prev_terminal_file"):
+		_term_prev_file = str(cfg.get_value("zen", "prev_terminal_file"))
+		_term_file_known = true
 	zen = bool(cfg.get_value("zen", "on", false))
 	if want_desktop:
 		set_desktop(true)
@@ -358,6 +462,10 @@ func _load_prefs() -> void:
 		_refit_soon()
 		_apply_terminal(true)
 		_save_prefs()
+	else:
+		# A cockpit that died in zen may have left Konsole's default on the
+		# zen profile.
+		Desk.terminal_unstick(_terminal_file())
 
 
 func _save_prefs() -> void:
@@ -371,6 +479,8 @@ func _save_prefs() -> void:
 	cfg.set_value("zen", "on", zen)
 	Desk.zen_save(cfg, _zen_prev)
 	cfg.set_value("zen", "prev_terminal", _term_prev)
+	if _term_file_known:
+		cfg.set_value("zen", "prev_terminal_file", _term_prev_file)
 	var at: Dictionary = hull.arrangement()
 	for title in at:
 		cfg.set_value("hull", title, at[title])

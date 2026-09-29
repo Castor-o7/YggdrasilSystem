@@ -134,6 +134,57 @@ static func terminal_fallback() -> String:
 	return "Basic"
 
 
+## Konsole keeps its default profile in konsolerc, by file name, and
+## setDefaultProfile writes it there, so zen's profile outlives zen: with
+## no Konsole running when zen ends (every window closed first, or the
+## cockpit killed mid-zen), every Konsole opened after would start
+## dissolved. The entry as it stands: "" is Konsole's built-in profile
+## (no key at all).
+static func terminal_default_file() -> String:
+	if not LINUX:
+		return ""
+	return _run("kreadconfig6", ["--file", "konsolerc", "--group", "Desktop Entry", "--key", "DefaultProfile"])
+
+
+## Hand konsolerc back `file` ("" for the built-in profile), but only if
+## zen's profile is still the default there: a default Josh picked since
+## is his.
+static func terminal_unstick(file: String) -> void:
+	if not LINUX or terminal_default_file() != TERM_PROFILE + ".profile":
+		return
+	var args := ["--file", "konsolerc", "--group", "Desktop Entry", "--key", "DefaultProfile"]
+	if file.is_empty() or file == TERM_PROFILE + ".profile":
+		args.append("--delete")
+	else:
+		args.append(file)
+	_run("kwriteconfig6", args)
+
+
+## The file a Konsole profile named `name` lives in (the user's profiles,
+## then the system's), for prefs that predate terminal_default_file; ""
+## when there is none, which is the built-in profile.
+static func terminal_profile_file(name: String) -> String:
+	if not LINUX or name.is_empty():
+		return ""
+	var data := OS.get_environment("XDG_DATA_HOME")
+	if data.is_empty():
+		data = OS.get_environment("HOME").path_join(".local/share")
+	var sys := OS.get_environment("XDG_DATA_DIRS")
+	var dirs := PackedStringArray([data])
+	dirs.append_array((sys if not sys.is_empty() else "/usr/local/share:/usr/share").split(":", false))
+	for dir in dirs:
+		var d := dir.path_join("konsole")
+		if not DirAccess.dir_exists_absolute(d):
+			continue
+		for f in DirAccess.get_files_at(d):
+			if f.get_extension() != "profile":
+				continue
+			for line in FileAccess.get_file_as_string(d.path_join(f)).split("\n"):
+				if line.strip_edges() == "Name=" + name:
+					return f
+	return ""
+
+
 ## Make sure the zen profile exists, making it if it does not. False when
 ## it cannot be made.
 static func terminal_ready() -> bool:

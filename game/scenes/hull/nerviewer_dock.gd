@@ -42,6 +42,9 @@ var _launched := false
 var _dock_path := ""
 var _want_hidden := false
 var _hidden := false
+## Set by release(): the quit path, so the frame between it and the tree
+## going away does not write the file back.
+var _released := false
 
 
 func _ready() -> void:
@@ -52,7 +55,7 @@ func _ready() -> void:
 
 func _process(dt: float) -> void:
 	_timer -= dt
-	if _timer > 0.0 or block == null:
+	if _timer > 0.0 or block == null or _released:
 		return
 	_timer = POLL
 	block.bare = running()
@@ -62,7 +65,9 @@ func _process(dt: float) -> void:
 		_hidden = _want_hidden
 		Osa.fire(HIDE % [BUNDLE_ID, "true" if _hidden else "false"])
 	var rect := _screen_rect()
-	if rect != _last_rect:
+	# Rewritten when gone too: something removed it (an older cockpit's
+	# quit), and NERViewer would stay undocked until the next move.
+	if rect != _last_rect or not FileAccess.file_exists(_dock_path):
 		_last_rect = rect
 		_write(rect)
 
@@ -86,7 +91,13 @@ func _write(rect: Rect2i) -> void:
 	cfg.set_value("dock", "by", "Yggdrasil System")
 	cfg.set_value("dock", "pid", OS.get_process_id())  # so a crash cannot leave NERViewer stranded
 	cfg.set_value("dock", "hidden", _want_hidden)
-	if cfg.save(_dock_path) != OK:
+	# NERViewer checks the pid is still this program, not a recycled one.
+	cfg.set_value("dock", "program", OS.get_executable_path().get_file())
+	# Written aside and renamed over: ConfigFile.save truncates first, and
+	# NERViewer polling in that instant would read an empty file.
+	var tmp := _dock_path + ".tmp"
+	if cfg.save(tmp) != OK or DirAccess.rename_absolute(tmp, _dock_path) != OK:
+		DirAccess.remove_absolute(tmp)
 		push_warning("could not write " + _dock_path)
 
 
@@ -175,11 +186,15 @@ func set_hidden(on: bool) -> void:
 
 
 func release() -> void:
+	_released = true
 	if _hidden:
 		_hidden = false
 		Osa.fire(HIDE % [BUNDLE_ID, "false"])  # only ever set on macOS
+	# Only our own file: another cockpit's dock is not ours to undo.
 	if _dock_path != "" and FileAccess.file_exists(_dock_path):
-		DirAccess.remove_absolute(_dock_path)
+		var cfg := ConfigFile.new()
+		if cfg.load(_dock_path) != OK or int(cfg.get_value("dock", "pid", 0)) == OS.get_process_id():
+			DirAccess.remove_absolute(_dock_path)
 
 
 func _exit_tree() -> void:
