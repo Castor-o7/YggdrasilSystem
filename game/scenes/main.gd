@@ -10,7 +10,10 @@ extends Node2D
 ## the overlay look without leaving the app), S saves a screenshot
 ## beside the project, Q or Escape quits.
 ## H stows the HUD (the hull, its instruments, NERViewer with them) while
-## the void flies on; T stows the tree. Both persist.
+## the void flies on; T stows the tree; C stows the chrono alone, keeping
+## its slot, whatever H says. All three persist. ? or F1 shows the key
+## card (scenes/hull/key_card.gd), the list of all of this; any key or a
+## click on it puts it away.
 ## The number keys are the drive's gears: 1 to 5 states (idle, cruise,
 ## ether, nebula, ring), 6 to 0 sequences (gate, warp, debris, squall,
 ## arrival; 0 is gear 10), then minus for departure (11, from a berth
@@ -35,6 +38,7 @@ const DESIGN := Vector2i(1440, 900)
 const BLOCK := preload("res://scenes/hull/sigil_block.tscn")
 const CLOCK := preload("res://scenes/blocks/clock.tscn")
 const NERVIEWER_DOCK := preload("res://scenes/hull/nerviewer_dock.gd")
+const KEY_CARD := preload("res://scenes/hull/key_card.gd")
 const Paths := preload("res://scripts/paths.gd")
 const Desk := preload("res://scripts/desk.gd")
 
@@ -50,9 +54,13 @@ var zen := false
 var hud := true
 var garage := false
 var tree_shown := true
+var chrono_shown := true
 const STOW := 0.8               # seconds to fade either away or back
 var _hud_alpha := 1.0
 var _tree_alpha := 1.0
+var _chrono_alpha := 1.0
+var _chrono: SigilBlock
+var _key_card: Node2D
 ## The desktop's chrome as it was before zen (the Dock and menu-bar
 ## auto-hide on macOS, each Plasma panel's hiding mode on Linux; see
 ## Desk.zen_read), so zen can hand it back exactly.
@@ -101,6 +109,8 @@ func _ready() -> void:
 		Workspace.changed.connect(_on_workspace_changed)
 	_apply_wallpaper()
 	_dock_blocks()
+	_key_card = KEY_CARD.new()
+	add_child(_key_card)
 	_update_passthrough()
 
 
@@ -113,6 +123,11 @@ func _dock_blocks() -> void:
 	clock.get_node("Content").add_child(CLOCK.instantiate())
 	hull.dock(clock, "left", 0)
 	_place_from_prefs(clock, "left", 0)
+	_chrono = clock
+	clock.modulate.a = _chrono_alpha
+	clock.visible = _chrono_alpha > 0.0
+	if not chrono_shown:
+		hull.stowed.append(clock)
 	# NERViewer: a sigil with nothing inside; NERViewer's own window fills it.
 	var nerv: SigilBlock = BLOCK.instantiate()
 	nerv.title = "nerviewer"
@@ -401,6 +416,18 @@ func set_tree(on: bool) -> void:
 	_save_prefs()
 
 
+## The chrono alone: it fades like the HUD, keeps its slot, and gives its
+## disc back to the desktop while it is away.
+func set_chrono(on: bool) -> void:
+	chrono_shown = on
+	if _chrono:
+		hull.stowed.erase(_chrono)
+		if not on:
+			hull.stowed.append(_chrono)
+	_update_passthrough()
+	_save_prefs()
+
+
 func set_fake_wallpaper(on: bool) -> void:
 	fake_wallpaper = on
 	_apply_wallpaper()
@@ -438,6 +465,10 @@ func _update_passthrough() -> void:
 	var rail_top: float = s.y * (1.0 - hull.RAIL)
 	var rail_low: float = rail_top + k * RAIL_STRIP
 	var loops: Array = [[Vector2(0, rail_top), Vector2(s.x, rail_top), Vector2(s.x, rail_low), Vector2(0, rail_low)]]
+	if _key_card and _key_card.shown:
+		# The card takes clicks while it is up, so one on it puts it away.
+		var card: Rect2 = _key_card.rect()
+		loops.append([card.position * k, Vector2(card.end.x, card.position.y) * k, card.end * k, Vector2(card.position.x, card.end.y) * k])
 	if hud and garage:
 		var col_w: float = s.x * hull.SIDE
 		loops.append([Vector2(0, 0), Vector2(col_w, 0), Vector2(col_w, rail_top), Vector2(0, rail_top)])
@@ -496,6 +527,8 @@ func _load_prefs() -> void:
 	tree_shown = bool(cfg.get_value("look", "tree", true))
 	_hud_alpha = 1.0 if hud else 0.0
 	_tree_alpha = 1.0 if tree_shown else 0.0
+	chrono_shown = bool(cfg.get_value("look", "chrono", true))
+	_chrono_alpha = 1.0 if chrono_shown else 0.0
 	var want_desktop := bool(cfg.get_value("look", "desktop", false))
 	_zen_prev = Desk.zen_load(cfg)
 	# Read now: the prefs are saved (set_desktop, zen) before the blocks
@@ -533,6 +566,7 @@ func _save_prefs() -> void:
 	cfg.set_value("look", "wallpaper", fake_wallpaper)
 	cfg.set_value("look", "hud", hud)
 	cfg.set_value("look", "tree", tree_shown)
+	cfg.set_value("look", "chrono", chrono_shown)
 	cfg.set_value("zen", "on", zen)
 	Desk.zen_save(cfg, _zen_prev)
 	cfg.set_value("zen", "prev_terminal", _term_prev)
@@ -565,6 +599,10 @@ func _process(dt: float) -> void:
 	_tree_alpha = move_toward(_tree_alpha, 1.0 if tree_shown else 0.0, dt / STOW)
 	tree.modulate.a = _tree_alpha
 	tree.visible = _tree_alpha > 0.0
+	if _chrono:
+		_chrono_alpha = move_toward(_chrono_alpha, 1.0 if chrono_shown else 0.0, dt / STOW)
+		_chrono.modulate.a = _chrono_alpha
+		_chrono.visible = _chrono_alpha > 0.0
 	# The usable screen changes when the menu bar hides or the display
 	# changes; over the desktop, keep covering all of it.
 	_screen_timer -= dt
@@ -606,10 +644,29 @@ func _helm(gear: int) -> void:
 	void_layer.drive.shift(gear)
 
 
+func set_key_card(on: bool) -> void:
+	_key_card.set_shown(on)
+	_update_passthrough()
+
+
+## A click anywhere the cockpit takes one puts the key card away.
+func _unhandled_input(event: InputEvent) -> void:
+	if _key_card and _key_card.shown and event is InputEventMouseButton and event.pressed:
+		set_key_card(false)
+		get_viewport().set_input_as_handled()
+
+
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event.is_pressed() or event.is_echo():
 		return
+	# While the card is up, any key puts it away and does nothing else, so
+	# Escape closes the card rather than the cockpit.
+	if _key_card.shown:
+		set_key_card(false)
+		return
 	match event.keycode:
+		KEY_SLASH, KEY_F1:
+			set_key_card(true)
 		KEY_B:
 			set_desktop(not desktop)
 		KEY_W:
@@ -622,6 +679,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 			set_garage(not garage)
 		KEY_T:
 			set_tree(not tree_shown)
+		KEY_C:
+			set_chrono(not chrono_shown)
 		KEY_Q, KEY_ESCAPE:
 			_save_prefs()
 			_release_zen()

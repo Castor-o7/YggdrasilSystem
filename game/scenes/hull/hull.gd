@@ -138,12 +138,19 @@ func _kill_tween(block: Control) -> void:
 		_tweens.erase(block)
 
 
+## Instruments put away on their own (main.gd's C for the chrono): they
+## keep their slot but take no clicks.
+var stowed: Array[Control] = []
+
+
 ## Each instrument's disc in the hull's coordinates, [center, radius]:
 ## the click area is these and nothing else of the columns.
 func discs() -> Array:
 	var out := []
 	for entry in _docked:
 		var block: Control = entry[0]
+		if block in stowed:
+			continue
 		out.append([block.position + block.size * 0.5, minf(block.size.x, block.size.y) * 0.5])
 	return out
 
