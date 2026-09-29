@@ -1,0 +1,437 @@
+## The desk: everything the cockpit changes about the desktop around it,
+## one call per intent, with the macOS way and the Linux (KDE Plasma 6,
+## KWin) way side by side. Preloaded where used (not a class_name, like
+## paths.gd).
+##
+## macOS: AppleScript through Osa, unchanged from when it lived in
+## main.gd. Linux: D-Bus through qdbus6. Never OS.execute on Linux: in
+## Godot 4.7 it runs the command through a shell that drops double quotes
+## and expands $ and backticks (found 2026-09-28: every Plasma script lost
+## its string literals). OS.execute_with_pipe and OS.create_process hand argv
+## straight to the program, so a whole script goes as one argument (see
+## _run). Every Linux call is blocking but short (about 10 ms each on
+## Josh's machine), which also lets the quit path finish its restores
+## before the process ends.
+
+const Paths := preload("res://scripts/paths.gd")
+
+static var MAC: bool = OS.get_name() == "macOS"
+static var LINUX: bool = OS.get_name() == "Linux"
+
+
+# --- Zen: the desktop's own chrome gets out of the way ---------------------
+
+## macOS: the Dock and the menu bar auto-hide, the setting the user could
+## flip in System Settings, changed live; the first use asks the user to
+## allow the app to control System Events.
+const ZEN_GET := 'tell application "System Events" to tell dock preferences to get {autohide, autohide menu bar}'
+const ZEN_SET := 'tell application "System Events" to tell dock preferences to set {autohide, autohide menu bar} to {%s, %s}'
+
+## Linux: every Plasma panel goes to auto-hide through plasmashell's
+## scripting console, and comes back to exactly the hiding mode it had
+## ("none", "autohide", "dodgewindows", ...), by panel id.
+## The same query tells the cockpit where the panels are (see
+## usable_rect); screenGeometry is in logical px, like everything else.
+const PANELS_GET := 'print(JSON.stringify(panels().map(function (p) { var g = screenGeometry(p.screen); return {id: String(p.id), hiding: p.hiding, loc: p.location, h: p.height, g: [g.x, g.y, g.width, g.height]}; })))'
+const PANELS_HIDE := 'panels().forEach(function (p) { p.hiding = "autohide"; })'
+const PANELS_SET := 'var want = %s; panels().forEach(function (p) { var h = want[String(p.id)]; if (h !== undefined) p.hiding = h; })'
+
+
+## What zen will hand back: {dock, menu} on macOS, {panels: {id: hiding}}
+## on Linux.
+static func zen_read() -> Dictionary:
+	if MAC:
+		var parts := Osa.run(ZEN_GET).split(",")
+		if parts.size() != 2:
+			return {"dock": false, "menu": false}
+		return {"dock": parts[0].strip_edges() == "true", "menu": parts[1].strip_edges() == "true"}
+	if LINUX:
+		var hiding := {}
+		for p in _panels(true):
+			hiding[str(p.get("id", ""))] = str(p.get("hiding", "none"))
+		return {"panels": hiding}
+	return {}
+
+
+## On: hide the chrome. Off: hand back `prev`, as zen_read gave it.
+static func zen_apply(on: bool, prev: Dictionary) -> void:
+	if MAC:
+		var dock: bool = true if on else bool(prev.get("dock", false))
+		var menu: bool = true if on else bool(prev.get("menu", false))
+		Osa.fire(ZEN_SET % [str(dock).to_lower(), str(menu).to_lower()])
+	elif LINUX:
+		if on:
+			_plasma(PANELS_HIDE)
+		else:
+			var want: Dictionary = prev.get("panels", {})
+			if not want.is_empty():
+				_plasma(PANELS_SET % JSON.stringify(want))
+		_panels_at = -1  # the struts just changed; usable_rect asks again
+
+
+## The previous values live in prefs beside the rest of zen. macOS keeps
+## its original keys, so an existing prefs file still reads.
+static func zen_save(cfg: ConfigFile, prev: Dictionary) -> void:
+	if MAC:
+		cfg.set_value("zen", "prev_dock", bool(prev.get("dock", false)))
+		cfg.set_value("zen", "prev_menu", bool(prev.get("menu", false)))
+	elif LINUX:
+		cfg.set_value("zen", "prev_panels", prev.get("panels", {}))
+
+
+static func zen_load(cfg: ConfigFile) -> Dictionary:
+	if MAC:
+		return {"dock": bool(cfg.get_value("zen", "prev_dock", false)), "menu": bool(cfg.get_value("zen", "prev_menu", false))}
+	if LINUX:
+		var panels = cfg.get_value("zen", "prev_panels", {})
+		return {"panels": panels if panels is Dictionary else {}}
+	return {}
+
+
+# --- The terminal dissolves -------------------------------------------------
+
+## Terminal (macOS) or Konsole (Linux) switches to the "Yggdrasil"
+## profile, the default profile with a transparent background, so the
+## text sits on the void. tools/terminal_zen_profile.sh (macOS) or
+## tools/konsole_zen_profile.sh (Linux) makes it; the cockpit runs the
+## script once if the profile is missing.
+const TERM_PROFILE := "Yggdrasil"
+const TERM_GET := 'tell application "Terminal" to if it is running then get name of default settings'
+const TERM_HAS := 'tell application "Terminal" to exists settings set "%s"'
+const TERM_SET := 'tell application "Terminal"
+if it is running then
+set default settings to settings set "%s"
+set startup settings to settings set "%s"
+set current settings of every tab of every window to settings set "%s"
+end if
+end tell'
+const TERM_SCRIPT_MAC := "tools/terminal_zen_profile.sh"
+const TERM_SCRIPT_LINUX := "tools/konsole_zen_profile.sh"
+
+
+## The profile the terminal is using now, or "" if it is not running.
+## Konsole: the first window's default profile (what new tabs open in),
+## the closest thing to Terminal's "default settings".
+static func terminal_current() -> String:
+	if MAC:
+		return Osa.run(TERM_GET)
+	if LINUX:
+		for svc in _konsoles():
+			for obj in _objects(svc, "/Windows/"):
+				var name := _qdbus([svc, obj, "org.kde.konsole.Window.defaultProfile"])
+				if not name.is_empty():
+					return name
+	return ""
+
+
+## The last resort for the profile to hand back: Terminal's own "Basic";
+## Konsole's configured default profile, else its built-in one.
+static func terminal_fallback() -> String:
+	if LINUX:
+		var file := _run("kreadconfig6", ["--file", "konsolerc", "--group", "Desktop Entry", "--key", "DefaultProfile"])
+		var name := file.trim_suffix(".profile")
+		return name if not name.is_empty() and name != TERM_PROFILE else "Built-in"
+	return "Basic"
+
+
+## Make sure the zen profile exists, making it if it does not. False when
+## it cannot be made.
+static func terminal_ready() -> bool:
+	if MAC:
+		if Osa.run(TERM_HAS % TERM_PROFILE) == "true":
+			return true
+		return _make_profile(TERM_SCRIPT_MAC)
+	if LINUX:
+		if FileAccess.file_exists(_konsole_profile_path()):
+			return true
+		return _make_profile(TERM_SCRIPT_LINUX)
+	return false
+
+
+## Linux only, at startup: a running Konsole never rereads its profile
+## directory, so the zen profile must exist before a Konsole starts for
+## that Konsole to be able to switch to it. Made as early as possible,
+## every Konsole opened after the cockpit's first run can dissolve. Not
+## from a headless test run, which should leave the desktop alone.
+static func terminal_prepare() -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	if LINUX and not FileAccess.file_exists(_konsole_profile_path()):
+		_make_profile(TERM_SCRIPT_LINUX)
+
+
+## Switch every window and tab to `profile`. Konsole: every session of
+## every Konsole process, and every window's default for new tabs; going
+## back, only what is on the zen profile, so a tab Josh had put on some
+## other profile keeps it.
+## Konsole 26 answers setProfile with AccessDenied ("security sensitive
+## DBus API is disabled") yet applies it; the answer is ignored. A
+## Konsole that predates the profile file does not know it, and is named
+## once so the reason it stayed opaque is on record.
+static func terminal_set(profile: String) -> void:
+	if MAC:
+		Osa.fire(TERM_SET % [profile, profile, profile])
+		return
+	if not LINUX:
+		return
+	for svc in _konsoles():
+		var windows := _objects(svc, "/Windows/")
+		if profile == TERM_PROFILE and not windows.is_empty() and svc not in _stale_warned:
+			var known := _qdbus([svc, windows[0], "org.kde.konsole.Window.profileList"])
+			if TERM_PROFILE not in known.split("\n"):
+				_stale_warned.append(svc)
+				print("zen: %s started before the %s profile existed; restart it to dissolve" % [svc, TERM_PROFILE])
+				continue
+		var back := profile != TERM_PROFILE
+		for obj in windows:
+			if not back or _qdbus([svc, obj, "org.kde.konsole.Window.defaultProfile"]) == TERM_PROFILE:
+				_qdbus([svc, obj, "org.kde.konsole.Window.setDefaultProfile", profile])
+		for obj in _objects(svc, "/Sessions/"):
+			if not back or _qdbus([svc, obj, "org.kde.konsole.Session.profile"]) == TERM_PROFILE:
+				_qdbus([svc, obj, "org.kde.konsole.Session.setProfile", profile])
+		_toolbars(svc, not back)
+
+
+static var _stale_warned: PackedStringArray = []
+
+
+## Terminal.app has no toolbar; Konsole does, an opaque strip (New Tab,
+## Split View, Copy, Paste) left floating over the void once the
+## background clears (Josh, 2026-09-28). In zen each window's toolbars are
+## hidden, and the ones that were showing are remembered by
+## "service window", so leaving zen shows those again and a toolbar Josh
+## had hidden himself stays hidden. A cockpit restarted mid-zen has lost
+## that memory, so it shows them all: the stock look.
+static var _shown_toolbars := {}
+
+
+static func _toolbars(svc: String, hide: bool) -> void:
+	for win in _objects(svc, "/konsole/MainWindow_"):
+		var key := svc + " " + win
+		if hide:
+			if _shown_toolbars.has(key):
+				continue  # already put away; a second pass must not forget them
+			var shown := PackedStringArray()
+			for bar in _qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.toolBars"]).split("\n", false):
+				if _qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.isToolBarVisible", bar]) == "true":
+					shown.append(bar)
+					_qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.setToolBarVisible", bar, "false"])
+			_shown_toolbars[key] = shown
+		else:
+			var bars = _shown_toolbars.get(key, null)
+			if bars == null:
+				bars = _qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.toolBars"]).split("\n", false)
+			for bar in bars:
+				_qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.setToolBarVisible", bar, "true"])
+			_shown_toolbars.erase(key)
+
+
+static func _make_profile(rel: String) -> bool:
+	var script := Paths.find_up(rel)
+	if script.is_empty():
+		print("zen: %s profile missing and no %s to make it" % [TERM_PROFILE, rel])
+		return false
+	if LINUX:
+		_run("/bin/sh", [script])
+	else:
+		OS.execute("/bin/sh", [script])
+	return true
+
+
+static func _konsole_profile_path() -> String:
+	var data := OS.get_environment("XDG_DATA_HOME")
+	if data.is_empty():
+		data = OS.get_environment("HOME").path_join(".local/share")
+	return data.path_join("konsole").path_join(TERM_PROFILE + ".profile")
+
+
+# --- Borders (Linux) -----------------------------------------------------------
+
+## macOS cannot script Terminal's title bar away, so cover.gd paints the
+## wallpaper over it. KWin can: in zen a small KWin script takes the frame
+## off every Konsole window, and off any opened while it runs; leaving zen
+## unloads it and a one-shot script puts the frames back (KWin does not
+## undo a script's changes when it is unloaded). The scripts are written
+## to user:// so an exported cockpit carries them.
+const BORDERS_PLUGIN := "yggdrasil_zen_borders"
+const BORDERS_JS := '// Yggdrasil System, zen: Konsole windows lose their frame.
+function konsole(w) {
+	return w.normalWindow && (w.desktopFileName == "org.kde.konsole" || w.resourceClass == "org.kde.konsole" || w.resourceClass == "konsole");
+}
+function bare(w) { if (konsole(w)) w.noBorder = true; }
+workspace.windowList().forEach(bare);
+workspace.windowAdded.connect(bare);
+'
+const CLOTHE_JS := '// Yggdrasil System, zen over: Konsole windows get their frame back.
+function konsole(w) {
+	return w.normalWindow && (w.desktopFileName == "org.kde.konsole" || w.resourceClass == "org.kde.konsole" || w.resourceClass == "konsole");
+}
+workspace.windowList().forEach(function (w) { if (konsole(w)) w.noBorder = false; });
+callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript", "%s");
+'
+
+## null until the first call, so the first call always looks: a cockpit
+## that crashed in zen left the script loaded, and the next start's
+## borders(false) takes it away. Only then acts: KWin forgets a D-Bus loaded
+## script when it restarts (the frames it took then come back with the
+## new session's windows), so a start that finds no script left over has
+## nothing to put back, and a Konsole Josh made frameless himself stays so.
+static var _bare = null
+
+
+static func borders(bare: bool) -> void:
+	if not LINUX or (_bare != null and _bare == bare):
+		return
+	var first: bool = _bare == null
+	_bare = bare
+	if first and not bare and not _kwin_loaded(BORDERS_PLUGIN):
+		return
+	_kwin_unload(BORDERS_PLUGIN)
+	if bare:
+		_kwin_run(BORDERS_JS, BORDERS_PLUGIN)
+	else:
+		# It unloads itself once it has run: KWin reads a script's file on
+		# a worker thread after run(), so unloading it from here at once
+		# could beat it to the windows.
+		_kwin_run(CLOTHE_JS % (BORDERS_PLUGIN + "_off"), BORDERS_PLUGIN + "_off")
+
+
+## Loads and runs `js` as `plugin`, first unloading any copy left over
+## (KWin will not load a name twice).
+static func _kwin_run(js: String, plugin: String) -> void:
+	_kwin_unload(plugin)
+	var path := ProjectSettings.globalize_path("user://%s.js" % plugin)
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		push_warning("could not write " + path)
+		return
+	f.store_string(js)
+	f.close()
+	var id := _qdbus(["org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", path, plugin])
+	if not id.is_valid_int() or int(id) < 0:
+		push_warning("KWin would not load %s (%s)" % [plugin, id])
+		return
+	_qdbus(["org.kde.KWin", "/Scripting/Script" + id, "org.kde.kwin.Script.run"])
+
+
+static func _kwin_loaded(plugin: String) -> bool:
+	return _qdbus(["org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.isScriptLoaded", plugin]) == "true"
+
+
+static func _kwin_unload(plugin: String) -> void:
+	if _kwin_loaded(plugin):
+		_qdbus(["org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", plugin])
+
+
+# --- The usable screen ----------------------------------------------------------
+
+## The part of a screen windows may use. Godot's X11 backend reads the
+## one _NET_WORKAREA rect X11 has for the whole desktop and clips every
+## screen by it, so on Josh's two monitors the 1440-high screen came back
+## 1036 high, the 1080 screen's panel cut taken off both. On Linux the
+## cockpit works it out itself: the screen, less each Plasma panel on it
+## that reserves space (hiding "none"). Panels are asked for at most
+## every PANEL_TTL seconds; zen_apply asks again at once.
+const PANEL_TTL := 5.0
+static var _panel_cache: Array = []
+static var _panels_at := -1
+
+
+static func usable_rect(screen: int) -> Rect2i:
+	if not LINUX:
+		return DisplayServer.screen_get_usable_rect(screen)
+	var r := Rect2i(DisplayServer.screen_get_position(screen), DisplayServer.screen_get_size(screen))
+	for p in _panels(false):
+		var g: Array = p.get("g", [])
+		if g.size() != 4 or str(p.get("hiding", "")) != "none":
+			continue
+		var at := Rect2i(int(g[0]), int(g[1]), int(g[2]), int(g[3]))
+		if not r.has_point(at.get_center()):
+			continue
+		var h := int(p.get("h", 0))
+		match str(p.get("loc", "")):
+			"bottom": r.size.y -= h
+			"top":
+				r.position.y += h
+				r.size.y -= h
+			"left":
+				r.position.x += h
+				r.size.x -= h
+			"right": r.size.x -= h
+	return r
+
+
+static func _panels(fresh: bool) -> Array:
+	var now := Time.get_ticks_msec()
+	if fresh or _panels_at < 0 or now - _panels_at > PANEL_TTL * 1000.0:
+		_panels_at = now
+		var parsed = JSON.parse_string(_plasma(PANELS_GET))
+		_panel_cache = parsed if parsed is Array else []
+	return _panel_cache
+
+
+# --- D-Bus plumbing (Linux) -----------------------------------------------------
+
+static var _qdbus_bin := ""
+
+
+static func _qdbus(args: Array) -> String:
+	if _qdbus_bin.is_empty():
+		_qdbus_bin = "qdbus"
+		for dir in OS.get_environment("PATH").split(":"):
+			if FileAccess.file_exists(dir.path_join("qdbus6")):
+				_qdbus_bin = dir.path_join("qdbus6")
+				break
+	return _run(_qdbus_bin, args)
+
+
+## Run and wait; stdout stripped, or "" on failure. Argv goes to the
+## program untouched (see the top of this file). At the end of a pipe
+## Godot's FileAccess does not set eof_reached, it reports a read error,
+## so either ends the read.
+static func _run(bin: String, args: Array) -> String:
+	var proc := OS.execute_with_pipe(bin, PackedStringArray(args))
+	if proc.is_empty():
+		return ""
+	var pipe: FileAccess = proc["stdio"]
+	var lines := PackedStringArray()
+	while true:
+		var line := pipe.get_line()
+		if line.is_empty() and (pipe.eof_reached() or pipe.get_error() != OK):
+			break
+		lines.append(line)
+	pipe.close()
+	(proc["stderr"] as FileAccess).close()
+	# Reap it (the pipe is closed, so it is exiting if not gone).
+	var code := -1
+	for _i in 50:
+		code = OS.get_process_exit_code(proc["pid"])
+		if code != -1:
+			break
+		OS.delay_msec(2)
+	return "\n".join(lines).strip_edges() if code == 0 else ""
+
+
+static func _plasma(js: String) -> String:
+	return _qdbus(["org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript", js])
+
+
+## Every running Konsole process: each owns org.kde.konsole-<pid>.
+static func _konsoles() -> PackedStringArray:
+	var found := PackedStringArray()
+	for line in _qdbus([]).split("\n"):
+		var name := line.strip_edges()
+		if name.begins_with("org.kde.konsole-"):
+			found.append(name)
+	return found
+
+
+## A Konsole's numbered objects: /Windows/N, /Sessions/N,
+## /konsole/MainWindow_N.
+static func _objects(svc: String, prefix: String) -> PackedStringArray:
+	var found := PackedStringArray()
+	for line in _qdbus([svc]).split("\n"):
+		var path := line.strip_edges()
+		if path.begins_with(prefix) and path.trim_prefix(prefix).is_valid_int():
+			found.append(path)
+	return found

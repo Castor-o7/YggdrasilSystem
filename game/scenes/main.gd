@@ -4,10 +4,11 @@ extends Node2D
 ## is not on the hull straight through to whatever window is under it.
 ##
 ## Keys: B toggles desktop mode, Z toggles zen (the macOS Dock and menu
-## bar auto-hide, so the cockpit has the whole screen; both come back
-## when the mouse touches their edge), W toggles a fake wallpaper behind
-## the void (windowed only, for judging the overlay look without leaving
-## the app), S saves a screenshot beside the project, Q or Escape quits.
+## bar, or on Linux the Plasma panels, auto-hide, so the cockpit has the
+## whole screen; they come back when the mouse touches their edge), W
+## toggles a fake wallpaper behind the void (windowed only, for judging
+## the overlay look without leaving the app), S saves a screenshot
+## beside the project, Q or Escape quits.
 ## H stows the HUD (the hull, its instruments, NERViewer with them) while
 ## the void flies on; T stows the tree. Both persist.
 ## The number keys are the drive's gears: 1 to 5 states (idle, cruise,
@@ -18,7 +19,8 @@ extends Node2D
 ## movement; a gear key takes the helm back. See
 ## scenes/void/drive.gd. Mode, zen, wallpaper, HUD and tree persist, the
 ## gear does not; zen restores the system's own settings when it ends or the
-## cockpit quits.
+## cockpit quits. What zen does to the desktop, on either system, is
+## scripts/desk.gd's business; this file only says when.
 
 const PREFS := "user://prefs.cfg"
 const DESIGN := Vector2i(1440, 900)
@@ -34,6 +36,7 @@ const BLOCK := preload("res://scenes/hull/sigil_block.tscn")
 const CLOCK := preload("res://scenes/blocks/clock.tscn")
 const NERVIEWER_DOCK := preload("res://scenes/hull/nerviewer_dock.gd")
 const Paths := preload("res://scripts/paths.gd")
+const Desk := preload("res://scripts/desk.gd")
 
 var _nerviewer_dock: Node
 
@@ -50,9 +53,13 @@ var tree_shown := true
 const STOW := 0.8               # seconds to fade either away or back
 var _hud_alpha := 1.0
 var _tree_alpha := 1.0
-## The Dock and menu-bar auto-hide settings as they were before zen, so
-## zen can hand them back exactly.
-var _zen_prev := [false, false]
+## The desktop's chrome as it was before zen (the Dock and menu-bar
+## auto-hide on macOS, each Plasma panel's hiding mode on Linux; see
+## Desk.zen_read), so zen can hand it back exactly.
+var _zen_prev := {}
+## Konsole windows seen while in zen: a new one is switched to the zen
+## profile too (Linux; Terminal takes the startup profile on its own).
+var _zen_konsoles := 0
 var _screen_timer := 0.0
 ## The shots tool flips modes for the camera; those must not become prefs.
 var persist := true
@@ -63,6 +70,9 @@ func _ready() -> void:
 	Workspace.windows_moved.connect(_on_windows_moved)
 	hull.laid_out.connect(_update_passthrough)
 	_load_prefs()
+	if persist:
+		Desk.terminal_prepare()
+		Workspace.changed.connect(_on_workspace_changed)
 	_apply_wallpaper()
 	_dock_blocks()
 	_update_passthrough()
@@ -108,7 +118,9 @@ func _on_windows_moved() -> void:
 		Pace.stir(0.75)
 
 
-## Desktop mode: borderless, transparent, on top, covering the usable screen.
+## Desktop mode: borderless, transparent, on top, covering the usable
+## screen, the one the window is on (on Linux, whichever monitor it was
+## on; Desk.usable_rect explains why Godot's own answer is not used).
 func set_desktop(on: bool) -> void:
 	desktop = on
 	var win := get_window()
@@ -116,102 +128,94 @@ func set_desktop(on: bool) -> void:
 	win.borderless = on
 	win.always_on_top = on
 	if on:
-		var usable := DisplayServer.screen_get_usable_rect(win.current_screen)
+		var usable := Desk.usable_rect(win.current_screen)
 		win.position = usable.position
 		win.size = usable.size
 	else:
 		win.size = DESIGN
-		var screen := DisplayServer.screen_get_usable_rect(win.current_screen)
+		var screen := Desk.usable_rect(win.current_screen)
 		win.position = screen.position + (screen.size - DESIGN) / 2
 	void_layer.set_ground_alpha(0.0 if on else 1.0)
 	_apply_wallpaper()
 	_update_passthrough()
-	frames.set_shown(zen and on)
-	cover.set_shown(zen and on)
+	_zen_paint()
 	_save_prefs()
 
 
-## Zen: ask System Events to auto-hide the Dock and the menu bar. This is
-## the setting the user could flip in System Settings, changed live; the
-## first use asks the user to allow the app to control System Events.
-## Over the desktop, zen also frames every open window in hairlines.
-const ZEN_GET := 'tell application "System Events" to tell dock preferences to get {autohide, autohide menu bar}'
-const ZEN_SET := 'tell application "System Events" to tell dock preferences to set {autohide, autohide menu bar} to {%s, %s}'
+## The zen paint that only makes sense over the desktop: the frames, the
+## title-bar cover (macOS), Konsole's frames taken off (Linux).
+func _zen_paint() -> void:
+	frames.set_shown(zen and desktop)
+	cover.set_shown(zen and desktop)
+	Desk.borders(zen and desktop)
 
-## Terminal dissolves in zen: its windows switch to the "Yggdrasil"
-## profile, the default profile with a transparent background, so the
-## text sits on the void. tools/terminal_zen_profile.sh makes the profile;
-## the cockpit runs it once if the profile is missing.
-const TERM_PROFILE := "Yggdrasil"
-const TERM_GET := 'tell application "Terminal" to if it is running then get name of default settings'
-const TERM_HAS := 'tell application "Terminal" to exists settings set "%s"'
-const TERM_SET := 'tell application "Terminal"
-if it is running then
-set default settings to settings set "%s"
-set startup settings to settings set "%s"
-set current settings of every tab of every window to settings set "%s"
-end if
-end tell'
+
+## Zen: the Dock and the menu bar (macOS) or the Plasma panels (Linux)
+## auto-hide, and the terminal dissolves into the void. Over the desktop,
+## zen also frames every open window in hairlines.
+## The terminal's zen profile is Desk.TERM_PROFILE; the one to go back to
+## is remembered here and in prefs.
 var _term_prev := ""
 
 
 func set_zen(on: bool) -> void:
 	if on and not zen:
-		_zen_prev = _read_zen()
-		_remember_terminal(Osa.run(TERM_GET))
+		_zen_prev = Desk.zen_read()
+		_remember_terminal(Desk.terminal_current())
 	zen = on
-	frames.set_shown(on and desktop)
-	cover.set_shown(on and desktop)
-	var want := [true, true] if on else _zen_prev
-	Osa.fire(ZEN_SET % [str(want[0]).to_lower(), str(want[1]).to_lower()])
+	_zen_paint()
+	Desk.zen_apply(on, _zen_prev)
 	_apply_terminal(on)
 	_save_prefs()
 
 
-## The profile to hand Terminal back. Never the zen profile itself: if zen
-## was already in force when it was read (a restart with zen on, a crash),
-## the earlier answer stands; failing that, the profile the zen profile
-## was built from (tools/terminal_zen_profile.sh records it in
-## terminal/.source); failing that, Terminal's own "Basic". Josh's default
-## was Homebrew, and a guess of "Basic" lost it once (2026-09-10).
+## The profile to hand the terminal back. Never the zen profile itself: if
+## zen was already in force when it was read (a restart with zen on, a
+## crash), the earlier answer stands; failing that, the profile the zen
+## profile was built from (the tools/*_zen_profile.sh scripts record it in
+## terminal/.source); failing that, Terminal's own "Basic" (Konsole's
+## configured default on Linux). Josh's default was Homebrew, and a guess
+## of "Basic" lost it once (2026-09-10).
 func _remember_terminal(name: String) -> void:
-	if not name.is_empty() and name != TERM_PROFILE:
+	if not name.is_empty() and name != Desk.TERM_PROFILE:
 		_term_prev = name
 		return
-	if not _term_prev.is_empty() and _term_prev != TERM_PROFILE:
+	if not _term_prev.is_empty() and _term_prev != Desk.TERM_PROFILE:
 		return
 	var source := Paths.find_up("terminal/.source")
 	var from := FileAccess.get_file_as_string(source).strip_edges() if not source.is_empty() else ""
-	_term_prev = from if not from.is_empty() and from != TERM_PROFILE else "Basic"
+	_term_prev = from if not from.is_empty() and from != Desk.TERM_PROFILE else Desk.terminal_fallback()
 
 
 func _apply_terminal(on: bool) -> void:
-	var profile := TERM_PROFILE if on else _term_prev
+	var profile := Desk.TERM_PROFILE if on else _term_prev
 	if profile.is_empty():
 		return
-	if on and Osa.run(TERM_HAS % TERM_PROFILE) != "true":
-		var script := Paths.find_up("tools/terminal_zen_profile.sh")
-		if not script.is_empty():
-			OS.execute("/bin/sh", [script])
-		else:
-			print("zen: Terminal profile %s missing and no script to make it" % TERM_PROFILE)
-			return
-	Osa.fire(TERM_SET % [profile, profile, profile])
+	if on and not Desk.terminal_ready():
+		return
+	Desk.terminal_set(profile)
 
 
-static func _read_zen() -> Array:
-	var parts := Osa.run(ZEN_GET).split(",")
-	if parts.size() != 2:
-		return [false, false]
-	return [parts[0].strip_edges() == "true", parts[1].strip_edges() == "true"]
+## A Konsole window opened in zen starts in the default profile (a new
+## tab in an existing window already takes the zen one): sweep again
+## whenever there are more Konsole windows than last time.
+func _on_workspace_changed() -> void:
+	if not Desk.LINUX:
+		return
+	var app = Workspace.apps.get("org.kde.konsole")
+	var n: int = app.windows if app != null and app.alive else 0
+	if zen and n > _zen_konsoles:
+		Desk.terminal_set(Desk.TERM_PROFILE)
+	_zen_konsoles = n
 
 
 ## Leaving zen without touching the prefs: the quit path.
 func _release_zen() -> void:
 	if zen:
-		Osa.fire(ZEN_SET % [str(_zen_prev[0]).to_lower(), str(_zen_prev[1]).to_lower()])
+		Desk.zen_apply(false, _zen_prev)
 		if not _term_prev.is_empty():
-			Osa.fire(TERM_SET % [_term_prev, _term_prev, _term_prev])
+			Desk.terminal_set(_term_prev)
+	Desk.borders(false)
 
 
 func set_hud(on: bool) -> void:
@@ -326,15 +330,16 @@ func _load_prefs() -> void:
 	_hud_alpha = 1.0 if hud else 0.0
 	_tree_alpha = 1.0 if tree_shown else 0.0
 	var want_desktop := bool(cfg.get_value("look", "desktop", false))
-	_zen_prev = [bool(cfg.get_value("zen", "prev_dock", false)), bool(cfg.get_value("zen", "prev_menu", false))]
+	_zen_prev = Desk.zen_load(cfg)
 	_remember_terminal(str(cfg.get_value("zen", "prev_terminal", "")))
 	zen = bool(cfg.get_value("zen", "on", false))
 	if want_desktop:
 		set_desktop(true)
+	# Always, zen or not: a cockpit that crashed in zen may have left
+	# Konsole's frames off (Linux); this puts them back.
+	_zen_paint()
 	if zen:
-		frames.set_shown(desktop)
-		cover.set_shown(desktop)
-		Osa.fire(ZEN_SET % ["true", "true"])
+		Desk.zen_apply(true, _zen_prev)
 		_apply_terminal(true)
 		_save_prefs()
 
@@ -348,8 +353,7 @@ func _save_prefs() -> void:
 	cfg.set_value("look", "hud", hud)
 	cfg.set_value("look", "tree", tree_shown)
 	cfg.set_value("zen", "on", zen)
-	cfg.set_value("zen", "prev_dock", _zen_prev[0])
-	cfg.set_value("zen", "prev_menu", _zen_prev[1])
+	Desk.zen_save(cfg, _zen_prev)
 	cfg.set_value("zen", "prev_terminal", _term_prev)
 	var at: Dictionary = hull.arrangement()
 	for title in at:
@@ -379,7 +383,7 @@ func _process(dt: float) -> void:
 	if desktop and _screen_timer <= 0.0:
 		_screen_timer = 1.0
 		var win := get_window()
-		var usable := DisplayServer.screen_get_usable_rect(win.current_screen)
+		var usable := Desk.usable_rect(win.current_screen)
 		if win.position != usable.position or win.size != usable.size:
 			win.position = usable.position
 			win.size = usable.size
@@ -451,7 +455,8 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_S:
 			# Note: over the desktop this captures only what the app draws,
 			# on transparent; the desktop behind it is not in the frame.
-			# For the real look, use the system screenshot (Cmd-Shift-3).
+			# For the real look, use the system screenshot (Cmd-Shift-3,
+			# or Spectacle on Plasma).
 			var stamp := Time.get_datetime_string_from_system().replace(":", "-")
 			var path := ProjectSettings.globalize_path("res://../screenshots/manual_%s.png" % stamp)
 			get_viewport().get_texture().get_image().save_png(path)

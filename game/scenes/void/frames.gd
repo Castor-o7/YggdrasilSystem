@@ -4,14 +4,19 @@ extends Node2D
 ## The frontmost app's frame is gold. Only meaningful over the desktop,
 ## where the cockpit covers the screen and its canvas maps to it; the
 ## helper reports window bounds in screen points, the cockpit works in
-## screen pixels, so the display scale bridges them.
+## screen pixels, so the display scale bridges them. On Linux the helper
+## reports KWin's logical px and the cockpit runs under XWayland, whose
+## coordinates are the same logical px at scale 1 (Godot's X11 backend
+## reports scale 1), so the bridge is the identity there. A scaled
+## Plasma display would need more thought.
 
 const FADE := 0.8
 const CORNER := 14.0
 const LABEL_SIZE := 9
-## No frame for these: Terminal has dissolved into the void in zen, and
-## NERViewer is an instrument of the hull, not a window on the desk.
-const EXEMPT := ["com.apple.Terminal", "edu.pdx.josh.nerviewer"]
+## No frame for these: Terminal (Konsole on Linux) has dissolved into the
+## void in zen, and NERViewer is an instrument of the hull, not a window
+## on the desk.
+const EXEMPT := ["com.apple.Terminal", "org.kde.konsole", "edu.pdx.josh.nerviewer"]
 
 var shown := false
 var _alpha := 0.0

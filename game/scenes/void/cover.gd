@@ -7,6 +7,10 @@ extends Node2D
 ## image wallpaper is mapped the way macOS fills the screen (aspect fill,
 ## centered). If the wallpaper cannot be read, the void's ground color
 ## stands in.
+##
+## macOS only. On Linux KWin can take Konsole's frame away outright
+## (scripts/desk.gd, borders), so there is nothing to cover and this
+## stays dark: no System Events to ask for the wallpaper, no sips.
 
 const TITLE_POINTS := 28.0     # macOS title bar height, in points
 ## The window frame's other three sides: macOS draws a hairline border at
@@ -24,6 +28,8 @@ var _wall_path := ""
 
 
 func set_shown(on: bool) -> void:
+	if OS.get_name() != "macOS":
+		return
 	shown = on
 	if on:
 		_refresh_wallpaper()

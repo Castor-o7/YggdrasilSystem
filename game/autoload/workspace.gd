@@ -3,6 +3,12 @@ extends Node
 ## per application, alive or recently gone. The tree reads `apps`; nothing
 ## else in the art layer touches the pipe. Without the helper (or in the
 ## shots tool) a scripted day stands in.
+##
+## The helper is per OS, same JSON: on macOS a Swift binary reading
+## NSWorkspace and the window server; on Linux a Python script that asks
+## KWin (KDE Plasma) for windows over D-Bus and /proc for CPU. On a Linux
+## desktop without KWin it exits at once with a reason on stderr, the pipe
+## closes, and the scripted day takes over as it does for a missing helper.
 
 signal changed
 ## On-screen window rects changed (something was dragged or resized).
@@ -20,7 +26,11 @@ class App:
 	var launched := 0.0     # unix seconds
 	var windows := 0
 	var visible := 0
-	var rects: Array[Rect2] = []   # on-screen windows, screen points
+	## On-screen windows: macOS screen points from the main display's
+	## top-left; on Linux KWin's global logical pixels from the screen
+	## layout's origin, which are X11 pixels at scale 1 (the cockpit runs
+	## under XWayland); frames.gd subtracts the window's own position.
+	var rects: Array[Rect2] = []
 	var cpu := 0.0          # fraction of one core, this app and its children
 	var active := false
 	var hidden := false
@@ -45,7 +55,8 @@ func _ready() -> void:
 
 
 ## In the editor the helper sits in the project's bin/. In an exported
-## app it sits beside the executable, inside Contents/MacOS.
+## app it sits beside the executable: inside Contents/MacOS on macOS,
+## next to YggdrasilSystem.x86_64 in dist/linux on Linux.
 static func helper_path() -> String:
 	var beside_exe := OS.get_executable_path().get_base_dir().path_join("yggapps")
 	if FileAccess.file_exists(beside_exe):
@@ -74,7 +85,9 @@ func _read_loop() -> void:
 	while _running and pipe.is_open():
 		var line := pipe.get_line()
 		if line.is_empty():
-			if pipe.eof_reached():
+			# A pipe's end is never eof_reached() in Godot 4.7: get_line()
+			# returns "" and get_error() goes to ERR_FILE_CANT_READ.
+			if pipe.eof_reached() or pipe.get_error() != OK:
 				break
 			OS.delay_msec(10)
 			continue
@@ -93,6 +106,8 @@ func _on_line(line: String) -> void:
 
 
 ## The fast path: on-screen rects by pid, sent whenever a window moves.
+## On Linux an app's windows can belong to several processes (two Konsole
+## instances are one app); the helper keys them all under the record's pid.
 func _ingest_windows(by_pid: Dictionary) -> void:
 	for id in apps:
 		var app: App = apps[id]
@@ -193,6 +208,8 @@ func _process(dt: float) -> void:
 # --- The scripted day -------------------------------------------------------
 
 ## [t_in, t_out, id, name, windows, cpu]; t_out < 0 means it never quits.
+## The same Mac day on every OS: it is a demo and the shots' fixture, and
+## it carries no rects, so nothing keyed on real ids (cover, frames) reads it.
 const DAY := [
 	[0.0, -1.0, "com.apple.finder", "Finder", 1, 0.01],
 	[1.5, -1.0, "com.apple.Terminal", "Terminal", 2, 0.04],

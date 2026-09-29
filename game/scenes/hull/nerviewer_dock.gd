@@ -5,6 +5,11 @@ extends Node
 ## filling that rect. If NERViewer is not running when the workspace
 ## first reports, it is launched once. On exit the file is removed and
 ## NERViewer goes back to being itself.
+##
+## Stowing (the HUD put away) is the file's `hidden` key on any system;
+## NERViewer goes invisible while it is docked and hidden. macOS also
+## hides the app through System Events, as it always has; Linux has no
+## such switch for another app, hence the key.
 
 const Paths := preload("res://scripts/paths.gd")
 const BUNDLE_ID := "edu.pdx.josh.nerviewer"
@@ -12,10 +17,14 @@ const BUNDLE_ID := "edu.pdx.josh.nerviewer"
 ## exported cockpit alike), then an installed copy.
 const APP_SIBLING := "NERViewer/dist/NERViewer.app"
 const APP_INSTALLED := "/Applications/NERViewer.app"
+## Linux: the sibling repo's export, else (developing) its Godot project.
+const LINUX_SIBLING := "NERViewer/dist/linux/NERViewer.x86_64"
+const LINUX_PROJECT := "NERViewer/game/project.godot"
 ## Wait this long after the workspace starts reporting before launching:
 ## at login NERViewer's own launch agent may still be coming up.
 const LAUNCH_GRACE := 5.0
-## If NERViewer has a launch agent, launchd owns it: kickstart is
+## If NERViewer has a launch agent (macOS) or a systemd user unit
+## (Linux), that owns it: kickstart and `systemctl --user start` are both
 ## idempotent (a running job is left alone), so a slow first launch can
 ## never end in two copies. Without one, open the app.
 const AGENT := "edu.pdx.josh.nerviewer"
@@ -49,7 +58,7 @@ func _process(dt: float) -> void:
 	block.bare = running()
 	# Failing: launched (or given up on) and still not here, past the grace.
 	block.failing = _launched and not running() and Workspace.clock > LAUNCH_GRACE * 2.0
-	if running() and _hidden != _want_hidden:
+	if OS.get_name() == "macOS" and running() and _hidden != _want_hidden:
 		_hidden = _want_hidden
 		Osa.fire(HIDE % [BUNDLE_ID, "true" if _hidden else "false"])
 	var rect := _screen_rect()
@@ -76,6 +85,7 @@ func _write(rect: Rect2i) -> void:
 	cfg.set_value("dock", "rect", rect)
 	cfg.set_value("dock", "by", "Yggdrasil System")
 	cfg.set_value("dock", "pid", OS.get_process_id())  # so a crash cannot leave NERViewer stranded
+	cfg.set_value("dock", "hidden", _want_hidden)
 	if cfg.save(_dock_path) != OK:
 		push_warning("could not write " + _dock_path)
 
@@ -94,6 +104,12 @@ func _maybe_launch() -> void:
 	if Workspace.clock < LAUNCH_GRACE:
 		return
 	_launched = true  # once per session; if Josh quits it, it stays quit
+	if DisplayServer.get_name() == "headless":
+		print("NERViewer dock: headless; not launching")  # a test run has no slot to dock into
+		return
+	if OS.get_name() == "Linux":
+		_launch_linux()
+		return
 	var plist := OS.get_environment("HOME").path_join("Library/LaunchAgents/%s.plist" % AGENT)
 	if FileAccess.file_exists(plist):
 		OS.create_process("/bin/launchctl", ["kickstart", "gui/%d/%s" % [_uid(), AGENT]])
@@ -107,20 +123,61 @@ func _maybe_launch() -> void:
 	print("NERViewer dock: app not found; the slot waits")
 
 
+## Linux: the systemd user unit if installed (tools/launch_agent.sh),
+## else the sibling export, else the sibling project run by Godot (the
+## one running this, when this is the editor build). Started from here,
+## the fallbacks live in the cockpit's own process group: a cockpit run
+## as a systemd unit takes them down when it stops.
+func _launch_linux() -> void:
+	var unit := OS.get_environment("HOME").path_join(".config/systemd/user/%s.service" % AGENT)
+	if FileAccess.file_exists(unit):
+		OS.create_process("systemctl", ["--user", "start", "%s.service" % AGENT])
+		print("NERViewer dock: started ", AGENT, ".service")
+		return
+	var exe := Paths.find_up(LINUX_SIBLING)
+	if not exe.is_empty():
+		OS.create_process(exe, [])
+		print("NERViewer dock: launched ", exe)
+		return
+	var project := Paths.find_up(LINUX_PROJECT)
+	if not project.is_empty():
+		var godot := "godot" if OS.has_feature("template") else OS.get_executable_path()
+		var dir := project.get_base_dir()
+		if DirAccess.dir_exists_absolute(dir.path_join(".godot")):
+			OS.create_process(godot, ["--path", dir])
+		else:
+			# Never opened in the editor: without an import its class_names
+			# are unknown and every script fails to parse. Import first, in
+			# the same child; the paths ride in as $0/$1, never as script text.
+			OS.create_process("/bin/sh", ["-c",
+				"\"$0\" --headless --path \"$1\" --import >/dev/null 2>&1; exec \"$0\" --path \"$1\"",
+				godot, dir])
+		print("NERViewer dock: launched ", dir, " with ", godot)
+		return
+	print("NERViewer dock: app not found; the slot waits")
+
+
+## macOS only: the launchd domain is gui/<uid>.
 static func _uid() -> int:
 	var out := []
 	OS.execute("/usr/bin/id", ["-u"], out)
 	return int(str(out[0]).strip_edges()) if not out.is_empty() else 501
 
 
+## Rewrites the dock file at once (if it has been written) so NERViewer
+## hears about it on its next poll.
 func set_hidden(on: bool) -> void:
+	if on == _want_hidden:
+		return
 	_want_hidden = on
+	if _last_rect != Rect2i():
+		_write(_last_rect)
 
 
 func release() -> void:
 	if _hidden:
 		_hidden = false
-		Osa.fire(HIDE % [BUNDLE_ID, "false"])
+		Osa.fire(HIDE % [BUNDLE_ID, "false"])  # only ever set on macOS
 	if _dock_path != "" and FileAccess.file_exists(_dock_path):
 		DirAccess.remove_absolute(_dock_path)
 

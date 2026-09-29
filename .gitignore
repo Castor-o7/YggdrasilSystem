@@ -5,3 +5,4 @@ terminal/.zenprof
 dist/
 .DS_Store
 terminal/.source
+__pycache__/
