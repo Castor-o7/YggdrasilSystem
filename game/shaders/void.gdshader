@@ -74,14 +74,23 @@ float hash21(vec2 p) {
 }
 
 // Smooth value noise and three octaves of it, for the nebula.
+// Each far corner is hashed from floor(i + 1.5), never as i + 1: hash21 is
+// chaotic in fp32 rounding at these arguments, and a compiler may fold
+// (i + 1) * k into i * k + k, so a cell's far corner stopped matching the
+// next cell's near one and the clouds broke into blocks along the lattice
+// (NVIDIA on Vulkan, found 2026-09-29; Metal kept them equal). The floor()
+// blocks that fold. It is taken from i, not from p: just below a power of
+// two, p + 1 rounds up into the next binade and floor(p + 1) lands on
+// i + 2, which flashed a one-pixel column of contour for one frame. i is an
+// exact integer, so i + 1.5 is exact and its floor is exactly i + 1.
 float vnoise(vec2 p) {
 	vec2 i = floor(p);
 	vec2 f = fract(p);
 	f = f * f * (3.0 - 2.0 * f);
 	float a = hash21(i);
-	float b = hash21(i + vec2(1.0, 0.0));
-	float c = hash21(i + vec2(0.0, 1.0));
-	float d = hash21(i + vec2(1.0, 1.0));
+	float b = hash21(floor(i + vec2(1.5, 0.5)));
+	float c = hash21(floor(i + vec2(0.5, 1.5)));
+	float d = hash21(floor(i + vec2(1.5, 1.5)));
 	return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
