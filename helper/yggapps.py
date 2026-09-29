@@ -2,10 +2,11 @@
 # yggapps — the Yggdrasil System workspace daemon, Linux/KDE edition.
 #
 # The same contract as main.swift (the macOS helper): one JSON object per
-# line, every application with a window, its window count, whether it is
-# frontmost, and its CPU including every process it has spawned; plus fast
-# {"win": {...}} lines whenever an on-screen window moves. Exits when its
-# stdout closes or its parent dies.
+# line, every application with a window (and, as on macOS, one still
+# running with its windows closed: see keep_windowless), its window count,
+# whether it is frontmost, and its CPU including every process it has
+# spawned; plus fast {"win": {...}} lines whenever an on-screen window
+# moves. Exits when its stdout closes or its parent dies.
 #
 # Windows come from KWin, not polling: the helper owns a D-Bus name, loads
 # a small KWin script (embedded below) that sends the whole window list back
@@ -372,6 +373,70 @@ def rect(w: dict) -> list:
 	return [float(v) for v in w["g"]]
 
 
+# --- Windowless apps -----------------------------------------------------------------
+
+_known = {}               # app key -> {"id", "name", "pids": {pid: start tick}}
+_applike = {}             # (pid, start tick) -> may outlive its windows
+_own_cg = None            # the cockpit's cgroup, read once
+
+
+def cgroup(pid: int):
+	"""The pid's cgroup v2 path, or None where there is none to read."""
+	try:
+		with open("/proc/%d/cgroup" % pid) as f:
+			for line in f:
+				if line.startswith("0::"):
+					return line[3:].strip()
+	except OSError:
+		pass
+	return None
+
+
+def app_like(pid: int, start: int) -> bool:
+	"""Whether a window process is an app (kept windowless, as macOS keeps
+	a .regular app) or a session daemon that happened to open a dialog
+	(plasmashell's wallpaper settings, the polkit or KWallet prompt), which
+	on macOS would never be listed at all. systemd tells them apart: KDE
+	starts apps in app-*.scope (and whatever runs from Konsole in a nested
+	tab(N).scope), daemons run as *.service. What the cockpit spawned itself
+	shares its unit, service or not. No cgroup v2: every pid counts, as
+	before."""
+	global _own_cg
+	k = (pid, start)
+	if k not in _applike:
+		if _own_cg is None:
+			_own_cg = cgroup(parent_pid) or ""
+		cg = cgroup(pid)
+		_applike[k] = cg is None or cg.endswith(".scope") or (cg != "" and cg == _own_cg)
+	return _applike[k]
+
+
+def keep_windowless(groups: dict, procs: dict) -> None:
+	"""On macOS an app lives while its process runs, windows or not (Finder,
+	Music playing with its window closed, a chat app in the tray). KWin only
+	knows windows, so each app's window processes are remembered with their
+	start ticks, and an app whose windows have all gone stays, with none,
+	while one of those processes still runs as itself (a reused pid starts
+	later) and is not now another app's (a Chrome web app's window closed,
+	Chrome's own still open). Only app-like processes are remembered, so a
+	daemon's dialog leaves with its window. Added to `groups` in place."""
+	for p in [p for p in _applike if p[0] not in procs or procs[p[0]][2] != p[1]]:
+		del _applike[p]
+	for key, a in groups.items():
+		_known[key] = {"id": a["id"], "name": a["name"],
+			"pids": {p: procs[p][2] for p in a["pids"] if p in procs and app_like(p, procs[p][2])}}
+	taken = {p for a in groups.values() for p in a["pids"]}
+	for key in list(_known):
+		if key in groups:
+			continue
+		k = _known[key]
+		alive = {p for p, st in k["pids"].items() if p in procs and procs[p][2] == st and p not in taken}
+		if not alive:
+			del _known[key]
+			continue
+		groups[key] = {"id": k["id"], "name": k["name"], "pids": alive, "wins": []}
+
+
 # --- Sample ------------------------------------------------------------------------
 
 _last_ticks = {}          # pid -> utime+stime ticks at the last sample
@@ -398,6 +463,7 @@ def sample() -> str:
 		children.setdefault(ppid, []).append(pid)
 	since_boot_last = (_last_time - BOOT) * CLK_TCK
 	groups = windows_by_app()
+	keep_windowless(groups, procs)
 	# A process that owns another app's windows is that app's, not its
 	# parent's: a Godot game run from Konsole is Godot's CPU, not Konsole's.
 	owner = {}
@@ -438,7 +504,7 @@ def sample() -> str:
 			"rects": [rect(w) for w in shown],
 			"cpu": round(cpu, 3),
 			"active": any(w.get("act") for w in wins),
-			"hidden": all(w.get("min") for w in wins),
+			"hidden": bool(wins) and all(w.get("min") for w in wins),
 			"self": parent_pid in a["pids"],
 		})
 	_last_ticks = {p: v[1] for p, v in procs.items()}

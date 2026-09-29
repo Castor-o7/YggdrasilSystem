@@ -8,9 +8,14 @@ extends Node
 signal changed
 
 ## The one face for every label: a thin condensed sans, uppercase and
-## letterspaced, from the system (Avenir Next Condensed). Labels get it
-## through the project theme; drawn text takes it from here. DISPLAY is
-## the ultra-light cut for large numerals (the clock).
+## letterspaced, from the system: Avenir Next Condensed on macOS. Linux has
+## no Avenir, so the SystemFont lists fallbacks after it, tried in order:
+## Nimbus Sans Narrow (a condensed grotesque) for labels, the ExtraLight
+## and Thin cuts of Source Sans 3 and Noto Sans for display numerals, and
+## DejaVu Sans Condensed last because every desktop has it. The lists are
+## NERViewer's, so the clock and its numerals share one face there too.
+## Labels get it through the project theme; drawn text takes it from here.
+## DISPLAY is the ultra-light cut for large numerals (the clock).
 const FONT: Font = preload("res://fonts/ui.tres")
 const DISPLAY: Font = preload("res://fonts/display.tres")
 

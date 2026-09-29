@@ -29,11 +29,14 @@ if [ "$(uname)" = "Linux" ]; then
       [ -x "$BIN" ] || { echo "build the app first: tools/build_app.sh"; exit 1; }
       mkdir -p "$UNIT_DIR"
       # Restart=no mirrors KeepAlive false: Q quits for the session.
+      # After= plasmashell and KWin: systemd stops in reverse order, so at
+      # logout the cockpit closes (and hands the panels and Konsole frames
+      # back through them) while both are still up.
       cat > "$UNIT" <<UN
 [Unit]
 Description=Yggdrasil System (desktop cockpit)
 PartOf=graphical-session.target
-After=graphical-session.target
+After=graphical-session.target plasma-plasmashell.service plasma-kwin_wayland.service plasma-kwin_x11.service
 
 [Service]
 Type=exec
@@ -65,19 +68,20 @@ UN
       # does the closing (no xdotool/wmctrl here) and is unloaded after.
       PID=$2
       case "$PID" in ''|*[!0-9]*) exit 0 ;; esac
+      Q=$(command -v qdbus6 || command -v qdbus-qt6 || command -v qdbus || echo qdbus6)
       NAME="ygg_close_$PID"
       JS=$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/$NAME.XXXXXX.js")
       printf 'for (const w of workspace.windowList())\n\tif (w.pid === %s && w.normalWindow && !w.transient) w.closeWindow();\n' "$PID" > "$JS"
-      ID=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$JS" "$NAME" 2>/dev/null || echo -1)
+      ID=$("$Q" org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript "$JS" "$NAME" 2>/dev/null || echo -1)
       case "$ID" in ''|-*|*[!0-9]*) ;; *)
-        qdbus6 org.kde.KWin "/Scripting/Script$ID" org.kde.kwin.Script.run >/dev/null 2>&1 || true ;;
+        "$Q" org.kde.KWin "/Scripting/Script$ID" org.kde.kwin.Script.run >/dev/null 2>&1 || true ;;
       esac
       # Give zen a few seconds to unwind; systemd sends SIGTERM after.
       i=0
       while kill -0 "$PID" 2>/dev/null && [ $i -lt 80 ]; do
         sleep 0.1; i=$((i + 1))
       done
-      qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "$NAME" >/dev/null 2>&1 || true
+      "$Q" org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "$NAME" >/dev/null 2>&1 || true
       rm -f "$JS"
       ;;
     *)

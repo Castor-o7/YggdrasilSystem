@@ -32,7 +32,7 @@ const ZEN_SET := 'tell application "System Events" to tell dock preferences to s
 ## ("none", "autohide", "dodgewindows", ...), by panel id.
 ## The same query tells the cockpit where the panels are (see
 ## usable_rect); screenGeometry is in logical px, like everything else.
-const PANELS_GET := 'print(JSON.stringify(panels().map(function (p) { var g = screenGeometry(p.screen); return {id: String(p.id), hiding: p.hiding, loc: p.location, h: p.height, g: [g.x, g.y, g.width, g.height]}; })))'
+const PANELS_GET := 'print(JSON.stringify(panels().map(function (p) { var g = screenGeometry(p.screen); return {id: String(p.id), hiding: p.hiding, loc: p.location, h: p.height, floating: p.floating, g: [g.x, g.y, g.width, g.height]}; })))'
 const PANELS_HIDE := 'panels().forEach(function (p) { p.hiding = "autohide"; })'
 const PANELS_SET := 'var want = %s; panels().forEach(function (p) { var h = want[String(p.id)]; if (h !== undefined) p.hiding = h; })'
 
@@ -276,7 +276,14 @@ static var _stale_warned: PackedStringArray = []
 ## "service window", so leaving zen shows those again and a toolbar Josh
 ## had hidden himself stays hidden. A cockpit restarted mid-zen has lost
 ## that memory, so it shows them all: the stock look.
+## Konsole's own menu bar is the same kind of strip (on in a stock
+## Konsole; macOS's is global and zen hides it). It goes the same way,
+## through the window's Show Menubar action, and comes back only where it
+## was showing; with no memory it is left alone, since off is the one
+## Josh chose.
 static var _shown_toolbars := {}
+static var _shown_menubars := {}
+const MENUBAR := "/actions/options_show_menubar"
 
 
 static func _toolbars(svc: String, hide: bool) -> void:
@@ -291,6 +298,11 @@ static func _toolbars(svc: String, hide: bool) -> void:
 					shown.append(bar)
 					_qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.setToolBarVisible", bar, "false"])
 			_shown_toolbars[key] = shown
+			# trigger, not setChecked: the menu bar follows the action's
+			# triggered signal, which setChecked does not send.
+			if _menubar_shown(svc, win):
+				_qdbus([svc, win + MENUBAR, "org.qtproject.Qt.QAction.trigger"])
+				_shown_menubars[key] = true
 		else:
 			var bars = _shown_toolbars.get(key, null)
 			if bars == null:
@@ -298,6 +310,13 @@ static func _toolbars(svc: String, hide: bool) -> void:
 			for bar in bars:
 				_qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.setToolBarVisible", bar, "true"])
 			_shown_toolbars.erase(key)
+			if _shown_menubars.has(key) and not _menubar_shown(svc, win):
+				_qdbus([svc, win + MENUBAR, "org.qtproject.Qt.QAction.trigger"])
+			_shown_menubars.erase(key)
+
+
+static func _menubar_shown(svc: String, win: String) -> bool:
+	return _qdbus([svc, win + MENUBAR, "org.qtproject.Qt.QAction.checked"]) == "true"
 
 
 static func _make_profile(rel: String) -> bool:
@@ -406,7 +425,10 @@ static func _kwin_unload(plugin: String) -> void:
 ## cockpit works it out itself: the screen, less each Plasma panel on it
 ## that reserves space (hiding "none"). Panels are asked for at most
 ## every PANEL_TTL seconds; zen_apply asks again at once.
+## A floating panel (Plasma 6's default) reserves its gap to the screen
+## edge too, FLOAT_GAP logical px, so the cockpit's edge stays clear of it.
 const PANEL_TTL := 5.0
+const FLOAT_GAP := 8
 static var _panel_cache: Array = []
 static var _panels_at := -1
 
@@ -422,7 +444,7 @@ static func usable_rect(screen: int) -> Rect2i:
 		var at := Rect2i(int(g[0]), int(g[1]), int(g[2]), int(g[3]))
 		if not r.has_point(at.get_center()):
 			continue
-		var h := int(p.get("h", 0))
+		var h := int(p.get("h", 0)) + (FLOAT_GAP if p.get("floating", false) == true else 0)
 		match str(p.get("loc", "")):
 			"bottom": r.size.y -= h
 			"top":
@@ -449,13 +471,15 @@ static func _panels(fresh: bool) -> Array:
 static var _qdbus_bin := ""
 
 
+## The Qt 6 qdbus: qdbus6 (Arch, Manjaro: qt6-tools), qdbus-qt6 (Fedora),
+## else plain qdbus.
 static func _qdbus(args: Array) -> String:
 	if _qdbus_bin.is_empty():
 		_qdbus_bin = "qdbus"
-		for dir in OS.get_environment("PATH").split(":"):
-			if FileAccess.file_exists(dir.path_join("qdbus6")):
-				_qdbus_bin = dir.path_join("qdbus6")
-				break
+		for bin in ["qdbus6", "qdbus-qt6"]:
+			for dir in OS.get_environment("PATH").split(":", false):
+				if _qdbus_bin == "qdbus" and FileAccess.file_exists(dir.path_join(bin)):
+					_qdbus_bin = dir.path_join(bin)
 	return _run(_qdbus_bin, args)
 
 

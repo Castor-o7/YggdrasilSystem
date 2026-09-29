@@ -136,36 +136,95 @@ func _maybe_launch() -> void:
 
 ## Linux: the systemd user unit if installed (tools/launch_agent.sh),
 ## else the sibling export, else the sibling project run by Godot (the
-## one running this, when this is the editor build). Started from here,
-## the fallbacks live in the cockpit's own process group: a cockpit run
-## as a systemd unit takes them down when it stops.
+## one running this, when this is the editor build).
 func _launch_linux() -> void:
-	var unit := OS.get_environment("HOME").path_join(".config/systemd/user/%s.service" % AGENT)
+	var config := OS.get_environment("XDG_CONFIG_HOME")
+	if config.is_empty():
+		config = OS.get_environment("HOME").path_join(".config")
+	var unit := config.path_join("systemd/user/%s.service" % AGENT)
 	if FileAccess.file_exists(unit):
 		OS.create_process("systemctl", ["--user", "start", "%s.service" % AGENT])
 		print("NERViewer dock: started ", AGENT, ".service")
 		return
 	var exe := Paths.find_up(LINUX_SIBLING)
 	if not exe.is_empty():
-		OS.create_process(exe, [])
+		_spawn(PackedStringArray([exe]))
 		print("NERViewer dock: launched ", exe)
 		return
 	var project := Paths.find_up(LINUX_PROJECT)
 	if not project.is_empty():
-		var godot := "godot" if OS.has_feature("template") else OS.get_executable_path()
+		var godot := _which("godot") if OS.has_feature("template") else OS.get_executable_path()
+		if godot.is_empty():
+			print("NERViewer dock: no godot on PATH to run ", project.get_base_dir(), "; the slot waits")
+			return
 		var dir := project.get_base_dir()
 		if DirAccess.dir_exists_absolute(dir.path_join(".godot")):
-			OS.create_process(godot, ["--path", dir])
+			_spawn(PackedStringArray([godot, "--path", dir]))
 		else:
 			# Never opened in the editor: without an import its class_names
 			# are unknown and every script fails to parse. Import first, in
 			# the same child; the paths ride in as $0/$1, never as script text.
-			OS.create_process("/bin/sh", ["-c",
+			_spawn(PackedStringArray(["/bin/sh", "-c",
 				"\"$0\" --headless --path \"$1\" --import >/dev/null 2>&1; exec \"$0\" --path \"$1\"",
-				godot, dir])
+				godot, dir]))
 		print("NERViewer dock: launched ", dir, " with ", godot)
 		return
 	print("NERViewer dock: app not found; the slot waits")
+
+
+## A fallback started as a plain child lives in the cockpit's cgroup, and
+## a cockpit run as a systemd unit takes its whole cgroup down when it
+## stops: NERViewer would die instead of undocking. So it gets a transient
+## unit of its own, as macOS's `open` hands the app to launchd, carrying
+## the display and data paths the cockpit sees. Without systemd-run, or if
+## the user manager will not take it, a plain child as before.
+const ADHOC_UNIT := "edu.pdx.josh.nerviewer-adhoc"
+const ADHOC_ENV := ["DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "PATH"]
+
+
+static func _spawn(argv: PackedStringArray) -> void:
+	var run := _which("systemd-run")
+	if not run.is_empty() and _exit_code(run, adhoc_args(argv)) == 0:
+		return
+	OS.create_process(argv[0], argv.slice(1))
+
+
+## systemd-run's arguments for `argv`; an env name alone copies its value.
+static func adhoc_args(argv: PackedStringArray) -> PackedStringArray:
+	var args := PackedStringArray(["--user", "--collect", "--quiet", "--unit=" + ADHOC_UNIT])
+	for name in ADHOC_ENV:
+		if OS.has_environment(name):
+			args.append("--setenv=" + name)
+	args.append("--")
+	args.append_array(argv)
+	return args
+
+
+static func _which(bin: String) -> String:
+	for dir in OS.get_environment("PATH").split(":", false):
+		if FileAccess.file_exists(dir.path_join(bin)):
+			return dir.path_join(bin)
+	return ""
+
+
+## Run and wait for the exit code; argv goes to the program untouched
+## (OS.execute runs a shell on Linux; see desk.gd). -1 if it would not run.
+static func _exit_code(bin: String, args: PackedStringArray) -> int:
+	var proc := OS.execute_with_pipe(bin, args)
+	if proc.is_empty():
+		return -1
+	var pipe: FileAccess = proc["stdio"]
+	while not (pipe.get_line().is_empty() and (pipe.eof_reached() or pipe.get_error() != OK)):
+		pass
+	pipe.close()
+	(proc["stderr"] as FileAccess).close()
+	var code := -1
+	for _i in 500:
+		code = OS.get_process_exit_code(proc["pid"])
+		if code != -1:
+			break
+		OS.delay_msec(2)
+	return code
 
 
 ## macOS only: the launchd domain is gui/<uid>.
