@@ -151,6 +151,13 @@ var phase_t := 0.0             # seconds into the phase
 ## The star field's seed and, during a warp sweep, the one being written.
 var seed := 0.0
 var seed_next := 0.0
+## New seeds stay as small as the boot field's: the shader hashes
+## cell + seed through fract(x * 456.21), and past a few hundred fp32 has
+## no fraction left there, so the stars fell into rows and columns. Seeds
+## of randi(1, 1000) * 37 (up to 37000) did exactly that after a warp
+## (found 2026-09-29). Far enough from the last one to read as new space.
+const SEED_MAX := 41.0
+const SEED_MIN_STEP := 9.0
 ## Warp sweep progress 0..1 while phase is "sweep".
 var sweep := 0.0
 ## Which side the great ship passes on: 1 right, -1 left.
@@ -171,6 +178,13 @@ var _weave_t := 0.0            # seconds until the next lean or shove
 var _frontmost := ""
 var _load := 0.0               # summed workspace CPU, fraction of one core
 var _rng := RandomNumberGenerator.new()
+
+
+static func new_seed(from: float, rng: RandomNumberGenerator) -> float:
+	var s := from
+	while absf(s - from) < SEED_MIN_STEP:
+		s = snappedf(rng.randf_range(1.0, SEED_MAX), 0.01)
+	return s
 
 
 func _ready() -> void:
@@ -310,7 +324,7 @@ func _advance_warp(dt: float) -> void:
 				phase = "sweep"
 				phase_t = 0.0
 				sweep = 0.0
-				seed_next = float(_rng.randi_range(1, 1000)) * 37.0
+				seed_next = new_seed(seed, _rng)
 		"sweep":
 			# The jump: a hard spike, then dead still in the new field.
 			_target_speed = WARP_JUMP_SPEED if phase_t < WARP_JUMP else 0.0
