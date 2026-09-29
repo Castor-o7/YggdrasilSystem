@@ -57,6 +57,14 @@ func _draw() -> void:
 		for r in app.rects:
 			# points -> screen pixels -> this window -> canvas.
 			var px := Rect2(r.position * scale, r.size * scale)
+			# Only windows with a real part on this cockpit's own screen: one
+			# on the next monitor that merely touches this edge (Chrome
+			# maximized at x = 1920) drew its left side as a hairline down
+			# the last column. The full rect is still drawn; the edges of a
+			# window that straddles the screen fall off the canvas.
+			var inside := px.intersection(Rect2(origin, Vector2(win.size)))
+			if inside.size.x < 8.0 or inside.size.y < 8.0:
+				continue
 			var tl: Vector2 = xf * (px.position - origin)
 			var br: Vector2 = xf * (px.end - origin)
 			var rect := Rect2(tl, br - tl).abs()
