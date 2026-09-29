@@ -38,18 +38,20 @@ const PANELS_SET := 'var want = %s; panels().forEach(function (p) { var h = want
 
 
 ## What zen will hand back: {dock, menu} on macOS, {panels: {id: hiding}}
-## on Linux.
+## on Linux; {} when it could not be read (System Events not allowed yet,
+## plasmashell busy or restarting), so the caller knows it has nothing to
+## hand back rather than a record of no panels.
 static func zen_read() -> Dictionary:
 	if MAC:
 		var parts := Osa.run(ZEN_GET).split(",")
 		if parts.size() != 2:
-			return {"dock": false, "menu": false}
+			return {}
 		return {"dock": parts[0].strip_edges() == "true", "menu": parts[1].strip_edges() == "true"}
 	if LINUX:
 		var hiding := {}
 		for p in _panels(true):
 			hiding[str(p.get("id", ""))] = str(p.get("hiding", "none"))
-		return {"panels": hiding}
+		return {"panels": hiding} if not hiding.is_empty() else {}
 	return {}
 
 
@@ -70,22 +72,43 @@ static func zen_apply(on: bool, prev: Dictionary) -> void:
 
 
 ## The previous values live in prefs beside the rest of zen. macOS keeps
-## its original keys, so an existing prefs file still reads.
+## its original keys, so an existing prefs file still reads. No record is
+## saved as no keys, so it loads back as {} (see main.gd _desk_zen), never
+## as a record of nothing to hand back.
 static func zen_save(cfg: ConfigFile, prev: Dictionary) -> void:
-	if MAC:
-		cfg.set_value("zen", "prev_dock", bool(prev.get("dock", false)))
-		cfg.set_value("zen", "prev_menu", bool(prev.get("menu", false)))
-	elif LINUX:
-		cfg.set_value("zen", "prev_panels", prev.get("panels", {}))
+	if MAC and prev.has("dock") and prev.has("menu"):
+		cfg.set_value("zen", "prev_dock", bool(prev["dock"]))
+		cfg.set_value("zen", "prev_menu", bool(prev["menu"]))
+	elif LINUX and not (prev.get("panels", {}) as Dictionary).is_empty():
+		cfg.set_value("zen", "prev_panels", prev["panels"])
 
 
 static func zen_load(cfg: ConfigFile) -> Dictionary:
 	if MAC:
-		return {"dock": bool(cfg.get_value("zen", "prev_dock", false)), "menu": bool(cfg.get_value("zen", "prev_menu", false))}
+		if not (cfg.has_section_key("zen", "prev_dock") and cfg.has_section_key("zen", "prev_menu")):
+			return {}
+		return {"dock": bool(cfg.get_value("zen", "prev_dock")), "menu": bool(cfg.get_value("zen", "prev_menu"))}
 	if LINUX:
 		var panels = cfg.get_value("zen", "prev_panels", {})
-		return {"panels": panels if panels is Dictionary else {}}
+		return {"panels": panels} if panels is Dictionary and not panels.is_empty() else {}
 	return {}
+
+
+## Linux, a restart in zen: a panel added since zen began is not in the
+## record, and hiding every panel again would leave it on auto-hide for
+## good. It joins the record as it is now (zen never hid it). Recorded
+## panels keep their answer: they are hidden now.
+static func zen_merge(prev: Dictionary) -> Dictionary:
+	if not LINUX or prev.is_empty():
+		return prev
+	var now := zen_read()
+	if now.is_empty():
+		return prev
+	var panels: Dictionary = (prev["panels"] as Dictionary).duplicate()
+	for id in now["panels"]:
+		if not panels.has(id):
+			panels[id] = now["panels"][id]
+	return {"panels": panels}
 
 
 # --- The terminal dissolves -------------------------------------------------

@@ -57,6 +57,9 @@ var _tree_alpha := 1.0
 ## auto-hide on macOS, each Plasma panel's hiding mode on Linux; see
 ## Desk.zen_read), so zen can hand it back exactly.
 var _zen_prev := {}
+## The instruments' slots from prefs (title -> "side:index"), kept for
+## the blocks docked after the prefs are read.
+var _hull_prefs := {}
 ## Konsole windows seen while in zen: a new one is switched to the zen
 ## profile too (Linux; Terminal takes the startup profile on its own).
 var _zen_konsoles := 0
@@ -187,15 +190,30 @@ func set_zen(on: bool) -> void:
 		print("cockpit: another cockpit has the helm; zen is its to change")
 		return
 	if on and not zen:
-		_zen_prev = Desk.zen_read()
+		# A failed read never replaces an answer we have: that would hide
+		# the chrome with nothing recorded to hand back.
+		var read := Desk.zen_read()
+		if not read.is_empty():
+			_zen_prev = read
 		_remember_terminal(Desk.terminal_current())
 		_remember_terminal_file()
 	zen = on
 	_zen_paint()
-	Desk.zen_apply(on, _zen_prev)
+	_desk_zen(on)
 	_refit_soon()
 	_apply_terminal(on)
 	_save_prefs()
+
+
+## The desktop's chrome in or out, but only with a record of how it was:
+## without one zen leaves the Dock and menu bar, or the panels, alone both
+## ways (handing back nothing would turn macOS's auto-hide off).
+func _desk_zen(on: bool) -> void:
+	if _zen_prev.is_empty():
+		if on:
+			print("zen: could not read the desktop's chrome; leaving it as it is")
+		return
+	Desk.zen_apply(on, _zen_prev)
 
 
 ## The profile to hand the terminal back. Never the zen profile itself: if
@@ -327,7 +345,7 @@ func _release_zen() -> void:
 	if not persist:
 		return  # never took the desk, so has nothing to hand back
 	if zen:
-		Desk.zen_apply(false, _zen_prev)
+		_desk_zen(false)
 		if not _term_prev.is_empty():
 			Desk.terminal_set(_term_prev)
 		Desk.terminal_unstick(_terminal_file())
@@ -418,10 +436,7 @@ static func _one_polygon(loops: Array) -> PackedVector2Array:
 func _place_from_prefs(block: Control, side: String, index: int) -> void:
 	if not persist:
 		return
-	var cfg := ConfigFile.new()
-	if cfg.load(PREFS) != OK:
-		return
-	var at := str(cfg.get_value("hull", block.title, "%s:%d" % [side, index])).split(":")
+	var at := str(_hull_prefs.get(block.title, "%s:%d" % [side, index])).split(":")
 	if at.size() == 2 and at[0] in ["left", "right"]:
 		hull.place(block, at[0], int(at[1]))
 
@@ -447,6 +462,11 @@ func _load_prefs() -> void:
 	_tree_alpha = 1.0 if tree_shown else 0.0
 	var want_desktop := bool(cfg.get_value("look", "desktop", false))
 	_zen_prev = Desk.zen_load(cfg)
+	# Read now: the prefs are saved (set_desktop, zen) before the blocks
+	# are docked, and a save then would have nothing to write for them.
+	if cfg.has_section("hull"):
+		for title in cfg.get_section_keys("hull"):
+			_hull_prefs[title] = str(cfg.get_value("hull", title))
 	_remember_terminal(str(cfg.get_value("zen", "prev_terminal", "")))
 	if cfg.has_section_key("zen", "prev_terminal_file"):
 		_term_prev_file = str(cfg.get_value("zen", "prev_terminal_file"))
@@ -458,7 +478,8 @@ func _load_prefs() -> void:
 	# Konsole's frames off (Linux); this puts them back.
 	_zen_paint()
 	if zen:
-		Desk.zen_apply(true, _zen_prev)
+		_zen_prev = Desk.zen_merge(_zen_prev)
+		_desk_zen(true)
 		_refit_soon()
 		_apply_terminal(true)
 		_save_prefs()
@@ -481,9 +502,13 @@ func _save_prefs() -> void:
 	cfg.set_value("zen", "prev_terminal", _term_prev)
 	if _term_file_known:
 		cfg.set_value("zen", "prev_terminal_file", _term_prev_file)
+	# The layout as loaded, under the layout as it stands: a save before
+	# the blocks are docked keeps their places.
 	var at: Dictionary = hull.arrangement()
 	for title in at:
-		cfg.set_value("hull", title, at[title])
+		_hull_prefs[title] = at[title]
+	for title in _hull_prefs:
+		cfg.set_value("hull", title, _hull_prefs[title])
 	cfg.save(PREFS)
 
 
