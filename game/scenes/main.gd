@@ -61,6 +61,13 @@ var _zen_prev := {}
 ## profile too (Linux; Terminal takes the startup profile on its own).
 var _zen_konsoles := 0
 var _screen_timer := 0.0
+## Quick rechecks still owed after a zen swap: the panels (or the Dock and
+## menu bar) move a beat after we ask, and the window manager shoves an
+## always-on-top window around while the struts change, so the first
+## recheck can land before it settles.
+var _screen_burst := 0
+const SCREEN_BURST := 4
+const SCREEN_BURST_GAP := 0.15
 ## The shots tool flips modes for the camera; those must not become prefs.
 var persist := true
 
@@ -165,6 +172,7 @@ func set_zen(on: bool) -> void:
 	zen = on
 	_zen_paint()
 	Desk.zen_apply(on, _zen_prev)
+	_refit_soon()
 	_apply_terminal(on)
 	_save_prefs()
 
@@ -207,6 +215,13 @@ func _on_workspace_changed() -> void:
 	if zen and n > _zen_konsoles:
 		Desk.terminal_set(Desk.TERM_PROFILE)
 	_zen_konsoles = n
+
+
+## Refit now rather than on the next one-second check, then a few more
+## times while the desktop settles.
+func _refit_soon() -> void:
+	_screen_timer = 0.0
+	_screen_burst = SCREEN_BURST
 
 
 ## Leaving zen without touching the prefs: the quit path.
@@ -340,6 +355,7 @@ func _load_prefs() -> void:
 	_zen_paint()
 	if zen:
 		Desk.zen_apply(true, _zen_prev)
+		_refit_soon()
 		_apply_terminal(true)
 		_save_prefs()
 
@@ -381,7 +397,8 @@ func _process(dt: float) -> void:
 	# changes; over the desktop, keep covering all of it.
 	_screen_timer -= dt
 	if desktop and _screen_timer <= 0.0:
-		_screen_timer = 1.0
+		_screen_timer = SCREEN_BURST_GAP if _screen_burst > 0 else 1.0
+		_screen_burst = maxi(_screen_burst - 1, 0)
 		var win := get_window()
 		var usable := Desk.usable_rect(win.current_screen)
 		if win.position != usable.position or win.size != usable.size:
