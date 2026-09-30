@@ -628,10 +628,11 @@ static func _kwin_unload(plugin: String) -> void:
 ## so a frame never waits on it: it reads the last answer, which main.gd
 ## has the desk hand renew (panels_refresh) at most every PANEL_TTL
 ## seconds, and at once after zen_apply.
-## A floating panel (Plasma 6's default) reserves its gap to the screen
-## edge too, FLOAT_GAP logical px, so the cockpit's edge stays clear of it.
+## A floating panel (Plasma 6's default) counts its height only, as KWin's
+## own work area does: leaving its 8 px float gap too had the cockpit ask
+## for 1028 where KWin holds 1036, and each resize between them nudged
+## NERViewer's sigil (2026-09-29).
 const PANEL_TTL := 5.0
-const FLOAT_GAP := 8
 static var _panel_cache: Array = []
 static var _panels_at := -1
 ## usable_rect runs on the main thread while the hand refreshes the panels:
@@ -653,7 +654,7 @@ static func usable_rect(screen: int) -> Rect2i:
 		var at := Rect2i(int(g[0]), int(g[1]), int(g[2]), int(g[3]))
 		if not r.has_point(at.get_center()):
 			continue
-		var h := int(p.get("h", 0)) + (FLOAT_GAP if p.get("floating", false) == true else 0)
+		var h := int(p.get("h", 0))
 		match str(p.get("loc", "")):
 			"bottom": r.size.y -= h
 			"top":

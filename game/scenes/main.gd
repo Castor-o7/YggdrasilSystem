@@ -102,6 +102,18 @@ var _screen_timer := 0.0
 var _screen_burst := 0
 const SCREEN_BURST := 4
 const SCREEN_BURST_GAP := 0.15
+## The last fit asked of the window manager, and how often. Past the
+## burst it is asked again once a second, as a panel still hiding holds
+## the window short for a few seconds, but only FIT_TRIES times: a fit
+## KWin never grants is then left to it until the screen or the panels
+## change, or the window is moved (KWin once dropped it 44 px). Asking
+## every second forever, against KWin's 1036 over a floating panel, made
+## Godot flick between two sizes, the hull re-easing and NERViewer's sigil
+## hopping each time (2026-09-29).
+const FIT_TRIES := 6
+var _fit_asked := Rect2i()
+var _fit_tries := 0
+var _fit_given := Rect2i()
 ## The shots tool flips modes for the camera; those must not become prefs.
 var persist := true
 ## One cockpit flies the desk. A second one (editor Play beside the
@@ -199,6 +211,8 @@ func set_desktop(on: bool) -> void:
 	win.borderless = on
 	win.always_on_top = on
 	_ask_panels()
+	_fit_asked = Rect2i()  # the loop asks afresh, if this one is lost
+	_fit_given = Rect2i()
 	if on:
 		var usable := Desk.usable_rect(win.current_screen)
 		win.position = usable.position
@@ -722,9 +736,23 @@ func _process(dt: float) -> void:
 		_ask_panels()
 		var win := get_window()
 		var usable := Desk.usable_rect(win.current_screen)
-		if win.position != usable.position or win.size != usable.size:
-			win.position = usable.position
-			win.size = usable.size
+		var now := Rect2i(win.position, win.size)
+		if now == usable:
+			_fit_given = Rect2i()
+		elif usable == _fit_asked and _fit_given != Rect2i() and now == _fit_given:
+			pass  # KWin's answer to a fit it would not grant: left to it
+		else:
+			if usable != _fit_asked or _fit_given != Rect2i():
+				_fit_asked = usable
+				_fit_tries = 0
+				_fit_given = Rect2i()
+			if _screen_burst > 0 or _fit_tries < FIT_TRIES:
+				if _screen_burst == 0:
+					_fit_tries += 1  # the burst's quick asks come free
+				win.position = usable.position
+				win.size = usable.size
+			else:
+				_fit_given = now
 
 
 ## Linux: the panels are asked for on the desk hand when the last answer
