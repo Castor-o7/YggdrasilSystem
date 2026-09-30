@@ -47,15 +47,31 @@ var _hidden := false
 ## Set by release(): the quit path, so the frame between it and the tree
 ## going away does not write the file back.
 var _released := false
+## Over the desktop the window only moves while KWin fits it: at zen-on it
+## holds it short while the panel hides, drops it 44 px, then grants the
+## screen, and each ask flicks Godot's size for a frame, re-easing the
+## hull. The sigil stays put until the window has been still SETTLE
+## seconds (a second's retry and the hull's ease), then moves once.
+## Windowed, a move is a drag, and the sigil follows it as before.
+const SETTLE := 1.2
+var _win := Rect2i()
+var _win_at := 0
 
 
 func _ready() -> void:
 	# Sibling of this project's own user dir.
 	_dock_path = OS.get_user_data_dir().get_base_dir().path_join("NERViewer").path_join("dock.cfg")
 	Workspace.changed.connect(_maybe_launch)
+	# A flick can last a single frame, between two looks at the window.
+	get_viewport().size_changed.connect(func() -> void: _win_at = Time.get_ticks_msec())
 
 
 func _process(dt: float) -> void:
+	var win := get_window()
+	var at := Rect2i(win.position, win.size)
+	if at != _win:
+		_win = at
+		_win_at = Time.get_ticks_msec()
 	_timer -= dt
 	if _timer > 0.0 or block == null or _released:
 		return
@@ -67,9 +83,10 @@ func _process(dt: float) -> void:
 		_hidden = _want_hidden
 		Osa.fire(HIDE % [BUNDLE_ID, "true" if _hidden else "false"])
 	var rect := _screen_rect()
+	var settling := win.borderless and _last_rect != Rect2i() and Time.get_ticks_msec() - _win_at < SETTLE * 1000.0
 	# Rewritten when gone too: something removed it (an older cockpit's
 	# quit), and NERViewer would stay undocked until the next move.
-	if rect != _last_rect or not FileAccess.file_exists(_dock_path):
+	if (rect != _last_rect and not settling) or not FileAccess.file_exists(_dock_path):
 		_last_rect = rect
 		_write(rect)
 
