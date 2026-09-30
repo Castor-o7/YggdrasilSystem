@@ -57,7 +57,7 @@ var _root := Vector2.ZERO
 var _os := Vector2.ZERO
 var _mat: ShaderMaterial
 var _boughs: Dictionary[String, Line2D] = {}
-var _laid: Array = []            # this frame's branches, far to near: [z, Branch, app, pts3, pts2, near, k, heat, col, alpha]
+var _laid: Array = []            # this frame's branches, far to near: [z, Branch, app, pts3, pts2, near, k, heat, bough]
 var _crown: Node2D              # trunk, OS halos, twigs, bud halos, names; breathes by modulate
 var _cores: Node2D              # the OS core and the frontmost bud's core; constant
 var _signature: Array = []      # what the crown was last drawn from
@@ -79,6 +79,7 @@ class Branch:
 	var el_target := 1.0
 	var growth := 0.0
 	var life := 1.0
+	var reach := 0.0               # length; frozen when the app quits
 	var heat := 0.0                # CPU, eased
 	var sap := 0.0                 # the bead's place along the branch, 0..1, integrated
 	var twigs: Array[float] = []   # growth per twig
@@ -138,6 +139,20 @@ func _sync(dt: float) -> void:
 			_branches[app.id] = b
 		b.az_target = az
 		b.el_target = el
+		b.reach = _length(app)
+	# A ghost left on a slot a live app now holds steps to the far side of
+	# the trunk: the same place across the crown, the other depth. Slots
+	# alternate front and back, so no live branch is there.
+	for id in _branches:
+		var app = Workspace.apps.get(id)
+		if app != null and app.alive:
+			continue
+		var g: Branch = _branches[id]
+		for a in alive:
+			var lb: Branch = _branches[a.id]
+			if absf(angle_difference(g.az_target, lb.az_target)) < deg_to_rad(4.0) and absf(g.el_target - lb.el_target) < deg_to_rad(4.0):
+				g.az_target = -g.az_target
+				break
 	for id in _branches:
 		var b: Branch = _branches[id]
 		var app = Workspace.apps.get(id)
@@ -176,7 +191,8 @@ static func _approach_angle(a: float, target: float, step: float) -> float:
 
 
 ## Branch length grows with how long the app has been open: an hour is
-## already most of the way, a working day is the full reach.
+## already most of the way, a working day is the full reach. A withered
+## branch keeps the reach it had when its app quit (Branch.reach).
 static func _length(app) -> float:
 	var hours := 0.0
 	if app.launched > 0.0:
@@ -235,14 +251,14 @@ func _lay_out() -> void:
 		var app = Workspace.apps.get(id)
 		if app == null:
 			continue
-		key.append([id, snappedf(b.az, 0.001), snappedf(b.el, 0.001), snappedf(b.growth, 0.005), snappedf(_length(app), 0.25)])
+		key.append([id, snappedf(b.az, 0.001), snappedf(b.el, 0.001), snappedf(b.growth, 0.005), snappedf(b.reach, 0.25)])
 	if key != _geom_key:
 		_geom_key = key
 		_build_geometry()
 	for entry in _laid:
 		var b: Branch = entry[1]
 		var app = entry[2]
-		var bough: Line2D = entry[10]
+		var bough: Line2D = entry[8]
 		var heat := b.heat
 		entry[7] = heat
 		bough.set_instance_shader_parameter("heat", heat)
@@ -254,9 +270,6 @@ func _lay_out() -> void:
 
 
 func _build_geometry() -> void:
-	var frame := Palette.color("frame")
-	var light := Palette.color("light")
-	var gold := Palette.color("core")
 	_laid.clear()
 	for id in _branches:
 		var b: Branch = _branches[id]
@@ -265,19 +278,10 @@ func _build_geometry() -> void:
 		if app == null or b.growth <= 0.0:
 			bough.visible = false
 			continue
-		var pts3 := _curve(_dir(b.az, b.el), _length(app), b.growth)
+		var pts3 := _curve(_dir(b.az, b.el), b.reach, b.growth)
 		var tip3: Vector3 = pts3[-1]
 		var near := clampf(0.5 + 0.5 * tip3.z / BRANCH_MAX, 0.0, 1.0)
 		var k := _scale(tip3)
-		var heat := b.heat
-		var col := frame.lerp(light, 0.4 * heat).lerp(gold, 0.5 * heat * heat)
-		# The crown's alpha, before the breath (its modulate breathes).
-		var alpha := lerpf(0.16, 0.5, heat) * b.life
-		if app.alive and app.hidden:
-			alpha *= 0.55
-		if app.active:
-			alpha = maxf(alpha, 0.42)
-		alpha = minf(1.0, alpha * lerpf(0.5, 1.1, near))
 		var pts := PackedVector2Array()
 		for p in pts3:
 			pts.append(_project(p))
@@ -286,10 +290,10 @@ func _build_geometry() -> void:
 		bough.width = BOUGH_PX * lerpf(0.8, 1.2, near)
 		bough.set_instance_shader_parameter("near", near)
 		bough.set_instance_shader_parameter("px_width", bough.width)
-		_laid.append([tip3.z, b, app, pts3, pts, near, k, heat, col, alpha, bough])
+		_laid.append([tip3.z, b, app, pts3, pts, near, k, b.heat, bough])
 	_laid.sort_custom(func(p, q): return p[0] < q[0])
 	for i in _laid.size():
-		move_child(_laid[i][10], i)
+		move_child(_laid[i][8], i)
 	move_child(_crown, get_child_count() - 2)
 	move_child(_cores, get_child_count() - 1)
 
@@ -351,10 +355,18 @@ func _draw_crown() -> void:
 		var pts: PackedVector2Array = entry[4]
 		var near: float = entry[5]
 		var k: float = entry[6]
-		var col: Color = entry[8]
-		var alpha: float = entry[9]
 		if b.growth < 1.0:
 			continue
+		# The twigs take this frame's heat, life, focus and hiding (all in
+		# the signature), not the geometry's; the alpha is before the breath.
+		var heat: float = entry[7]
+		var col := frame.lerp(light, 0.4 * heat).lerp(gold, 0.5 * heat * heat)
+		var alpha := lerpf(0.16, 0.5, heat) * b.life
+		if app.alive and app.hidden:
+			alpha *= 0.55
+		if app.active:
+			alpha = maxf(alpha, 0.42)
+		alpha = minf(1.0, alpha * lerpf(0.5, 1.1, near))
 		var tip3: Vector3 = pts3[-1]
 		var tip := pts[-1]
 		var d3 := (pts3[-1] - pts3[-2]).normalized()

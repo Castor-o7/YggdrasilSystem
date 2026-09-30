@@ -24,6 +24,9 @@ CGROUPS = {
 	200: U + "app.slice/app-org.kde.konsole-108112.scope/tab(108120).scope",
 	201: U + "app.slice/app-flatpak-com.google.Chrome-5.scope",
 	202: U + "app.slice/edu.pdx.josh.yggdrasil.service",   # spawned by the cockpit
+	203: U + "app.slice/app-org.godotengine.Godot@7ba84e61a2b44c0e9d3f5a1b2c3d4e5f.service",   # from Kickoff
+	204: U + "app.slice/app-pamac\\x2dtray\\x2dplasma@autostart.service",
+	205: U + "app.slice/edu.pdx.josh.nerviewer-adhoc.service",
 }
 
 
@@ -58,6 +61,16 @@ class Windowless(unittest.TestCase):
 		g = self.run_twice({"tray": group("tray", 200)})
 		self.assertEqual(g["tray"]["pids"], {200})
 		self.assertEqual(g["tray"]["wins"], [])
+
+	def test_launcher_started_app_stays_windowless(self):
+		self.assertIn("godot", self.run_twice({"godot": group("godot", 203)}))
+
+	def test_autostarted_tray_app_stays_windowless(self):
+		self.assertIn("tray", self.run_twice({"tray": group("tray", 204)}))
+
+	def test_nerviewer_in_its_own_unit_stays(self):
+		nv = yggapps.NERVIEWER_ID
+		self.assertIn(nv, self.run_twice({nv: group(nv, 205)}))
 
 	def test_cockpit_spawned_app_stays(self):
 		self.assertIn("kid", self.run_twice({"kid": group("kid", 202)}))

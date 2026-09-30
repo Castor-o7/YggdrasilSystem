@@ -32,6 +32,7 @@
 import fcntl
 import json
 import os
+import re
 import signal
 import sys
 import tempfile
@@ -193,21 +194,35 @@ def zen_guard() -> None:
 
 # --- The KWin script -----------------------------------------------------------
 
-# Runs inside KWin. Sends {"cur", "act", "wins": [...]} as one string on
-# every change; the helper coalesces bursts (a drag is one per frame).
+# Runs inside KWin. Sends {"cur", "act", "af", "wins": [...]} as one string
+# on every change; the helper coalesces bursts (a drag is one per frame).
 # Only fields the grouping needs are sent; titles only for spotting
-# NERViewer.
+# NERViewer. Normal windows and dialogs go; utility, menu, tooltip, OSD and
+# notification windows and Plasma's own never do. "af" is whose the focus
+# is, whatever window holds it: a dialog is its main window's (followed up
+# transientFor), since on macOS the frontmost app stays frontmost with its
+# Preferences or a file picker up. "tp" is the pid that a dialog's main
+# window belongs to (a portal's file picker is another process's).
 KWIN_JS = r"""
 var SERVICE = "@SERVICE@", PATH = "@PATH@", IFACE = "@IFACE@";
+
+// A dialog's main window: up transientFor (bounded; KWin allows no loop).
+function mainOf(w) {
+	for (var n = 0; w && w.transientFor && n < 16; n++)
+		w = w.transientFor;
+	return w;
+}
 
 function snapshot() {
 	var out = [];
 	var ws = workspace.windowList();
 	var active = workspace.activeWindow;
+	var top = mainOf(active);
 	for (var i = 0; i < ws.length; i++) {
 		var w = ws[i];
-		if (!w.normalWindow)
+		if (!w.normalWindow && !w.dialog)
 			continue;
+		var tw = mainOf(w);
 		var g = w.frameGeometry;
 		var desks = [];
 		for (var j = 0; j < w.desktops.length; j++)
@@ -218,12 +233,14 @@ function snapshot() {
 			skip: w.skipTaskbar, min: w.minimized, hid: w.hidden,
 			all: w.onAllDesktops, desks: desks, acts: w.activities,
 			op: w.opacity, g: [g.x, g.y, g.width, g.height],
+			dlg: !w.normalWindow, mod: !!w.modal, tp: tw.pid,
 			act: w === active
 		});
 	}
 	callDBus(SERVICE, PATH, IFACE, "Update", JSON.stringify({
 		cur: workspace.currentDesktop ? workspace.currentDesktop.id : "",
-		act: workspace.currentActivity, wins: out
+		act: workspace.currentActivity, wins: out,
+		af: top ? {pid: top.pid, cls: top.resourceClass, rn: top.resourceName, dfn: top.desktopFileName} : null
 	}));
 }
 
@@ -381,10 +398,14 @@ def is_nerviewer(w: dict) -> bool:
 	rn = str(w.get("rn") or "").lower()
 	if "nerviewer" in cls or "nerviewer" in rn:
 		return True
-	args = cmdline(int(w.get("pid") or 0))
-	if any(a in ("-e", "--editor", "--project-manager") for a in args):
+	# Godot marks its editor and project manager in the X11 name (the class
+	# is "Godot"), a native Wayland one in its app id.
+	if rn in ("godot_editor", "godot_projectlist") or cls.endswith((".editor", ".projectmanager")):
 		return False
-	if cls in ("godot_editor", "godot_projectlist"):
+	args = cmdline(int(w.get("pid") or 0))
+	# `godot .../project.godot` opens the editor on it (Exec=godot %f, a
+	# double-click in Dolphin); the game itself runs by --path.
+	if any(a in ("-e", "--editor", "--project-manager") or a.endswith("project.godot") for a in args):
 		return False
 	if (cls.startswith("godot") or rn.startswith("godot")) and "nerviewer" in str(w.get("cap") or "").lower():
 		return True
@@ -410,10 +431,13 @@ _nerv_cache = {}          # pid -> is NERViewer (cmdline reads are not free)
 
 def windows_by_app() -> dict:
 	"""app key -> {"id", "name", "pids": set, "wins": [window dicts]}. Normal
-	windows only (KWin's normalWindow; the script drops the rest), at least
-	MIN_SIDE on both sides and not fully transparent, as on macOS. Windows
-	that skip the taskbar are popups and tool windows, except the cockpit's
-	and NERViewer's own, which may well be set that way."""
+	windows and dialogs that are not modal (the script drops the rest), at
+	least MIN_SIDE on both sides and not fully transparent, as on macOS,
+	which counts a Preferences window but not a modal alert. A dialog whose
+	main window is another process's (the portal's file picker over a
+	Flatpak) is that app's sheet, not a window of the portal. Windows that
+	skip the taskbar are popups and tool windows, except the cockpit's and
+	NERViewer's own, which may well be set that way."""
 	out = {}
 	if not snap:
 		return out
@@ -424,6 +448,8 @@ def windows_by_app() -> dict:
 		pid = int(w.get("pid") or 0)
 		g = w.get("g") or [0, 0, 0, 0]
 		if g[2] < MIN_SIDE or g[3] < MIN_SIDE or float(w.get("op", 1)) <= 0:
+			continue
+		if w.get("dlg") and (w.get("mod") or int(w.get("tp") or pid) != pid):
 			continue
 		if pid not in _nerv_cache:
 			_nerv_cache[pid] = is_nerviewer(w)
@@ -483,18 +509,23 @@ def app_like(pid: int, start: int) -> bool:
 	"""Whether a window process is an app (kept windowless, as macOS keeps
 	a .regular app) or a session daemon that happened to open a dialog
 	(plasmashell's wallpaper settings, the polkit or KWallet prompt), which
-	on macOS would never be listed at all. systemd tells them apart: KDE
-	starts apps in app-*.scope (and whatever runs from Konsole in a nested
-	tab(N).scope), daemons run as *.service. What the cockpit spawned itself
-	shares its unit, service or not. No cgroup v2: every pid counts, as
-	before."""
+	on macOS would never be listed at all. systemd tells them apart by the
+	XDG unit names: Plasma starts apps as app-<desktop id>@<uuid>.service
+	(Kickoff, KRunner; @autostart.service at login) or app-*.scope (a
+	Flatpak, Konsole and whatever runs in its nested tab(N).scope), which
+	an app may nest further; daemons run as plasma-*.service in session or
+	background.slice, or D-Bus-activated under an app-dbus-* slice. What
+	the cockpit spawned itself shares its unit, service or not. No cgroup
+	v2: every pid counts, as before. (A real app started by D-Bus
+	activation still reads as a daemon.)"""
 	global _own_cg
 	k = (pid, start)
 	if k not in _applike:
 		if _own_cg is None:
 			_own_cg = cgroup(parent_pid) or ""
 		cg = cgroup(pid)
-		_applike[k] = cg is None or cg.endswith(".scope") or (cg != "" and cg == _own_cg)
+		_applike[k] = cg is None or (cg != "" and cg == _own_cg) or any(
+			c.startswith("app-") and not c.startswith("app-dbus") for c in cg.split("/"))
 	return _applike[k]
 
 
@@ -506,12 +537,13 @@ def keep_windowless(groups: dict, procs: dict) -> None:
 	while one of those processes still runs as itself (a reused pid starts
 	later) and is not now another app's (a Chrome web app's window closed,
 	Chrome's own still open). Only app-like processes are remembered, so a
-	daemon's dialog leaves with its window. Added to `groups` in place."""
+	daemon's dialog leaves with its window; NERViewer always is one (the
+	cockpit starts it in a unit of its own). Added to `groups` in place."""
 	for p in [p for p in _applike if p[0] not in procs or procs[p[0]][2] != p[1]]:
 		del _applike[p]
 	for key, a in groups.items():
 		_known[key] = {"id": a["id"], "name": a["name"],
-			"pids": {p: procs[p][2] for p in a["pids"] if p in procs and app_like(p, procs[p][2])}}
+			"pids": {p: procs[p][2] for p in a["pids"] if p in procs and (a["id"] == NERVIEWER_ID or app_like(p, procs[p][2]))}}
 	taken = {p for a in groups.values() for p in a["pids"]}
 	for key in list(_known):
 		if key in groups:
@@ -522,6 +554,90 @@ def keep_windowless(groups: dict, procs: dict) -> None:
 			del _known[key]
 			continue
 		groups[key] = {"id": k["id"], "name": k["name"], "pids": alive, "wins": []}
+
+
+# --- Whose a process is -----------------------------------------------------------
+
+_owners = {}              # pid -> app key, as last sampled
+_flat = {}                # (pid, start tick) -> its Flatpak's app id, or ""
+_FLATPAK = re.compile(r"/app-flatpak-(.+)-\d+\.scope(?:/|$)")
+_WEB_APP = re.compile(r"crx_|chrome-[a-p]{32}")
+
+
+def owners(groups: dict, remember: bool = True) -> dict:
+	"""pid -> the one app key it is. A process can hold several apps'
+	windows (a Chrome web app's window is the browser's), but its CPU and
+	its fast rects go to one of them, or a busy browser would warm every
+	web app and their frames would trade places; on macOS a web app is a
+	shim of its own and the renderers are Chrome's. The same one as last
+	sample if it is still there, else one that is not a web app, else the
+	first by key."""
+	global _owners
+	cands = {}
+	for key in sorted(groups):
+		for p in groups[key]["pids"]:
+			cands.setdefault(p, []).append(key)
+	out = {}
+	for p, keys in cands.items():
+		# The fast path lists no windowless apps; it keeps the sample's word.
+		if _owners.get(p) in keys or (not remember and p in _owners):
+			out[p] = _owners[p]
+		else:
+			out[p] = ([k for k in keys if not _WEB_APP.search(k)] or keys)[0]
+	if remember:
+		_owners = out
+	return out
+
+
+def flatpak_of(pid: int, start: int) -> str:
+	"""The Flatpak app id whose scope the pid runs in, or "". Cached like
+	_applike; a Flatpak's processes spread over several numbered scopes."""
+	k = (pid, start)
+	if k not in _flat:
+		m = _FLATPAK.search(cgroup(pid) or "")
+		_flat[k] = m.group(1) if m else ""
+	return _flat[k]
+
+
+def above(procs: dict, owner: dict) -> dict:
+	"""pid -> the app keys whose processes it sits above, inside one
+	Flatpak. A Flatpak that holds several apps' windows (Steam and the
+	games it starts) shares its bwrap root; none of them lifts that far."""
+	out = {}
+	for p, key in owner.items():
+		if p not in procs:
+			continue
+		fp = flatpak_of(p, procs[p][2])
+		q = procs[p][0]
+		while fp and q in procs and flatpak_of(q, procs[q][2]) == fp:
+			out.setdefault(q, set()).add(key)
+			q = procs[q][0]
+	return out
+
+
+def lift(p: int, key: str, procs: dict, owner: dict, over: dict) -> int:
+	"""Where an app's CPU family starts: its window process, or inside a
+	Flatpak the topmost ancestor still in that Flatpak and above no other
+	app's. Chrome's and Electron's zygote (every tab's renderer) is forked
+	beside the window process under bwrap, not below it; on macOS it
+	descends from the app, and a hot tab warms the branch."""
+	fp = flatpak_of(p, procs[p][2])
+	while fp:
+		q = procs[p][0]
+		if (q not in procs or owner.get(q, key) != key
+				or flatpak_of(q, procs[q][2]) != fp or over.get(q, {key}) != {key}):
+			break
+		p = q
+	return p
+
+
+def win_key(pid: int, key: str, a: dict, owner: dict) -> str:
+	"""The fast "win" line's key for an app: its record pid, or, for an app
+	whose record pid is another's (a web app in the browser's process),
+	pid/id, which the record carries as "wkey"."""
+	if owner.get(pid, key) == key:
+		return str(pid)
+	return "%d/%s" % (pid, a["id"])
 
 
 # --- Sample ------------------------------------------------------------------------
@@ -551,25 +667,39 @@ def sample() -> str:
 	since_boot_last = (_last_time - BOOT) * CLK_TCK
 	groups = windows_by_app()
 	keep_windowless(groups, procs)
+	for p in [p for p in _flat if p[0] not in procs or procs[p[0]][2] != p[1]]:
+		del _flat[p]
 	# A process that owns another app's windows is that app's, not its
 	# parent's: a Godot game run from Konsole is Godot's CPU, not Konsole's.
-	owner = {}
-	for aid, a in groups.items():
-		for p in a["pids"]:
-			owner.setdefault(p, aid)
+	owner = owners(groups)
+	# Whose the focus is when no listed window holds it (a modal dialog, a
+	# popup, a skip-taskbar window has it): the app of that window's main
+	# window, by pid, else by id if its process shows no windows at all.
+	# On macOS isActive is the app's, whichever of its windows has focus.
+	af = (snap or {}).get("af")
+	af_key = None
+	if isinstance(af, dict) and not any(w.get("act") for a in groups.values() for w in a["wins"]):
+		af_pid = int(af.get("pid") or 0)
+		if af_pid in owner:
+			af_key = owner[af_pid]
+		elif af_pid:
+			af_key = next((k for k, a in sorted(groups.items()) if a["id"] == app_id(af)), None)
 
 	apps = []
+	over = above(procs, owner)
+	claimed = set()           # a process nobody owns is charged to one app at most
 	for aid, a in groups.items():
 		family = set()
-		stack = list(a["pids"])
+		stack = [lift(p, aid, procs, owner, over) for p in a["pids"] if p in procs and owner.get(p) == aid]
 		while stack:
 			p = stack.pop()
-			if p in family or p not in procs:
+			if p in family or p in claimed or p not in procs:
 				continue
 			family.add(p)
 			for c in children.get(p, []):
 				if owner.get(c, aid) == aid:
 					stack.append(c)
+		claimed |= family
 		ticks = 0
 		for p in family:
 			t = procs[p][1]
@@ -581,7 +711,7 @@ def sample() -> str:
 		pid = rep_pid(a["pids"], procs)
 		wins = a["wins"]
 		shown = [w for w in wins if on_screen(w)]
-		apps.append({
+		rec = {
 			"id": a["id"],
 			"name": a["name"],
 			"pid": pid,
@@ -590,10 +720,17 @@ def sample() -> str:
 			"visible": len(shown),
 			"rects": [rect(w) for w in shown],
 			"cpu": round(cpu, 3),
-			"active": any(w.get("act") for w in wins),
+			"active": any(w.get("act") for w in wins) or aid == af_key,
+			# Plasma has no app-level hide (Cmd-H), so an app whose every
+			# window is minimized counts as hidden; on macOS minimizing
+			# alone does not.
 			"hidden": bool(wins) and all(w.get("min") for w in wins),
 			"self": parent_pid in a["pids"],
-		})
+		}
+		wk = win_key(pid, aid, a, owner)
+		if wk != str(pid):
+			rec["wkey"] = wk
+		apps.append(rec)
 	_last_ticks = {p: v[1] for p, v in procs.items()}
 	_last_time = now
 	apps.sort(key=lambda x: x["id"])
@@ -608,7 +745,8 @@ _last_win = None
 def win_line():
 	"""{"win": {"<pid>": [[x,y,w,h]]}}: on-screen rects keyed by each app's
 	record pid (an app's windows may belong to several processes, but the
-	cockpit matches on the record's pid), or None if nothing moved."""
+	cockpit matches on the record's pid; see win_key for one sharing its
+	pid), or None if nothing moved."""
 	global _last_win
 	groups = windows_by_app()
 	procs = {}
@@ -620,11 +758,12 @@ def win_line():
 				procs[p] = (0, 0, int(s[s.rfind(b")") + 2:].split()[19]))
 			except (OSError, IndexError, ValueError):
 				pass
+	owner = owners(groups, remember=False)
 	by_pid = {}
-	for a in groups.values():
+	for key, a in groups.items():
 		rects = [rect(w) for w in a["wins"] if on_screen(w)]
 		if rects:
-			by_pid[str(rep_pid(a["pids"], procs))] = rects
+			by_pid[win_key(rep_pid(a["pids"], procs), key, a, owner)] = rects
 	if by_pid == _last_win:
 		return None
 	_last_win = by_pid
@@ -760,8 +899,19 @@ def main() -> None:
 		GLib.timeout_add(10, first)
 		GLib.timeout_add(5000, lambda: (sys.stderr.write("yggapps: KWin never answered\n"), quit_now(2)))
 	else:
+		# A sample that fails is skipped, not the last: GLib drops a source
+		# whose callback raises, and the helper would live on with the tree
+		# frozen. (emit's exit on a closed pipe is os._exit, not an error.)
+		def tick() -> bool:
+			try:
+				emit(sample())
+			except Exception as e:
+				sys.stderr.write("yggapps: sample failed: %r\n" % e)
+				sys.stderr.flush()
+			return True
+
 		sample()
-		GLib.timeout_add(interval_ms, lambda: (emit(sample()), True)[1])
+		GLib.timeout_add(interval_ms, tick)
 		GLib.timeout_add(500, parent_gone)
 	_loop.run()
 

@@ -9,6 +9,8 @@ extends Node
 ## KWin (KDE Plasma) for windows over D-Bus and /proc for CPU. On a Linux
 ## desktop without KWin it exits at once with a reason on stderr, the pipe
 ## closes, and the scripted day takes over as it does for a missing helper.
+## A helper lost mid-session is respawned; the scripted day is only for one
+## that never ran, so fake apps never grow on a tree of real ones.
 
 signal changed
 ## On-screen window rects changed (something was dragged or resized).
@@ -17,6 +19,8 @@ signal source_changed(name: String)
 
 const HELPER := "res://bin/yggapps"
 const INTERVAL_MS := 1000
+const RESPAWN_TRIES := 5        # restarts in a row, 2 s apart and doubling
+const RESPAWN_SETTLED := 60.0   # a helper up this long has earned a fresh count
 
 ## One application, alive or withered.
 class App:
@@ -31,6 +35,9 @@ class App:
 	## layout's origin, which are X11 pixels at scale 1 (the cockpit runs
 	## under XWayland); frames.gd subtracts the window's own position.
 	var rects: Array[Rect2] = []
+	## The fast path's key when not the pid: a Linux web app shares its
+	## browser's process, so its rects come as "pid/id".
+	var wkey := ""
 	var cpu := 0.0          # fraction of one core, this app and its children
 	var active := false
 	var hidden := false
@@ -48,6 +55,9 @@ var _thread: Thread
 var _running := false
 var _synthetic := false
 var _synthetic_t := 0.0
+var _had_samples := false
+var _respawns := 0
+var _spawned_at := 0.0
 
 
 func _ready() -> void:
@@ -86,8 +96,12 @@ func start_helper() -> void:
 		_fallback("could not spawn helper")
 		return
 	_running = true
-	source_name = "yggapps"
-	source_changed.emit(source_name)
+	_spawned_at = clock
+	# A respawned helper names itself with its first sample: until then the
+	# records are withered, and the dock must not read that as NERViewer quit.
+	if not _had_samples:
+		source_name = "yggapps"
+		source_changed.emit(source_name)
 	_thread = Thread.new()
 	_thread.start(_read_loop)
 
@@ -112,6 +126,12 @@ func _on_line(line: String) -> void:
 	if not d is Dictionary:
 		return
 	if d.has("apps"):
+		_had_samples = true
+		if clock - _spawned_at >= RESPAWN_SETTLED:
+			_respawns = 0
+		if source_name != "yggapps":
+			source_name = "yggapps"
+			source_changed.emit(source_name)
 		_ingest(d["apps"])
 	elif d.has("win"):
 		_ingest_windows(d["win"])
@@ -125,7 +145,7 @@ func _ingest_windows(by_pid: Dictionary) -> void:
 		var app: App = apps[id]
 		if not app.alive:
 			continue
-		var list = by_pid.get(str(app.pid), [])
+		var list = by_pid.get(app.wkey if not app.wkey.is_empty() else str(app.pid), [])
 		app.rects.clear()
 		for r in list:
 			if r is Array and r.size() == 4:
@@ -141,8 +161,50 @@ func _on_closed() -> void:
 
 
 func _fallback(reason: String) -> void:
+	if _had_samples:
+		_retry(reason)
+		return
 	print("Workspace: %s; using the scripted day" % reason)
 	use_synthetic()
+
+
+## The feed is lost, not the apps frozen: every branch withers until the
+## new helper's first sample revives the ones still running.
+func _retry(reason: String) -> void:
+	_drop_pipe()
+	for id in apps:
+		var app: App = apps[id]
+		if app.alive:
+			app.alive = false
+			app.gone = clock
+			app.active = false
+			app.cpu = 0.0
+	source_name = "none"
+	source_changed.emit(source_name)
+	changed.emit()
+	if _respawns >= RESPAWN_TRIES:
+		print("Workspace: %s; gave up after %d restarts" % [reason, _respawns])
+		return
+	var wait := 2.0 * pow(2.0, _respawns)
+	_respawns += 1
+	print("Workspace: %s; restarting the helper in %d s" % [reason, int(wait)])
+	get_tree().create_timer(wait).timeout.connect(_respawn)
+
+
+func _respawn() -> void:
+	if not _running and not _synthetic:
+		start_helper()
+
+
+## Close a pipe whose helper has already gone and join its reader. No kill:
+## the pid is the dead helper's.
+func _drop_pipe() -> void:
+	_running = false
+	if _proc.has("stdio"):
+		_proc["stdio"].close()
+	if _thread and _thread.is_started():
+		_thread.wait_to_finish()
+	_proc = {}
 
 
 func stop() -> void:
@@ -189,6 +251,7 @@ func _ingest(list: Array) -> void:
 		for r in raw.get("rects", []):
 			if r is Array and r.size() == 4:
 				app.rects.append(Rect2(float(r[0]), float(r[1]), float(r[2]), float(r[3])))
+		app.wkey = str(raw.get("wkey", ""))
 		app.cpu = float(raw.get("cpu", 0.0))
 		app.active = bool(raw.get("active", false))
 		app.hidden = bool(raw.get("hidden", false))
