@@ -13,6 +13,8 @@ uniform vec4 gold_color : source_color = vec4(0.949, 0.831, 0.541, 1.0);
 uniform float breath : hint_range(0.0, 1.0) = 0.0;
 uniform float headroom = 1.0;      // Palette.headroom; the sap alone spends it
 uniform float surge = -1.0;        // the warp: a bead at this place on every bough, none below 0
+uniform float hair = 1.0;          // Palette.hair: hairline width on a plain screen
+uniform float lift = 0.0;          // Palette.lift: 0 on the Mac, 1 on a plain 1080p screen
 
 instance uniform float heat : hint_range(0.0, 1.0) = 0.0;     // CPU, 0..1
 instance uniform float life : hint_range(0.0, 1.0) = 1.0;     // 1 alive, GHOST withered
@@ -36,19 +38,30 @@ void fragment() {
 
 	// The colour and alpha the drawn tree used, exactly.
 	vec3 col = mix(mix(frame_color.rgb, light_color.rgb, 0.4 * h), gold_color.rgb, 0.5 * h * h);
-	float alpha = mix(0.16, 0.5, h) * lf * breathe;
+	float alpha = mix(mix(0.16, 0.3, lift), 0.5, h) * lf * breathe;
 	alpha *= mix(1.0, 0.55, hid);
 	alpha = max(alpha, act * 0.42 * breathe);
-	alpha = min(1.0, alpha * mix(0.5, 1.1, nr));
+	float depth = mix(mix(0.5, 0.65, lift), 1.1, nr);
+	alpha = min(1.0, alpha * depth);
 
 	// Core hairline: 0.7 px far, 1.5 px near, one pixel of feather.
-	float cw = mix(0.7, 1.5, nr);
+	float cw = mix(0.7, 1.5, nr) * hair;
 	float core = clamp(cw * 0.5 + 0.5 - across, 0.0, 1.0);
 	// Out of focus: a soft wide stroke under the line.
-	float soft = (1.0 - smoothstep(0.0, 2.0, across)) * 0.3 * max(0.0, 1.0 - 2.0 * nr);
+	float soft = (1.0 - smoothstep(0.0, 2.0 * hair, across)) * 0.3 * max(0.0, 1.0 - 2.0 * nr);
 	// Heat: a halo that falls off softly, wider and brighter as the app works.
-	float hw = mix(1.5, 4.0, nr) * (0.5 + 0.5 * h);
+	float hw = mix(1.5, 4.0, nr) * (0.5 + 0.5 * h) * hair;
 	float halo = exp(-across / hw) * 0.35 * h;
+	// Lifted: a glow under every bough, not only a working one, wider and
+	// brighter with heat and focus, gone before the strip's edge. Its own
+	// weight, not the hairline's alpha: a far branch glows faintly still.
+	// It rises out of the root: where the boughs meet, their glows would
+	// pool into one pale fan and outshine the bud.
+	float gw = mix(2.5, 4.5, nr) + 5.0 * h + 1.5 * act;
+	float edge = 1.0 - smoothstep(0.55, 1.0, across / (0.5 * W));
+	float glow = lift * exp(-across * across / (gw * gw)) * edge
+		* (0.12 + 0.7 * h + 0.12 * act) * lf * mix(1.0, 0.55, hid) * depth * breathe
+		* smoothstep(0.0, 0.25, UV.x) * (1.0 - smoothstep(0.94, 1.0, UV.x));
 
 	// Sap. Only while the app works: a bead running from the root toward
 	// the bud, brighter with heat; the tree walks it (Branch.sap) so a
@@ -62,7 +75,7 @@ void fragment() {
 		float ds = UV.x - surge;
 		sg = exp(-ds * ds * 60.0) * (1.0 - smoothstep(0.0, 3.0, across)) * lf;
 	}
-	float a = min(1.0, (core + soft + halo) * alpha + flow + sg);
+	float a = min(1.0, (core + soft + halo) * alpha + glow + flow + sg);
 	vec3 rgb = mix(col, light_color.rgb, min(1.0, flow * 0.7 + sg)) * mix(1.0, headroom, max(flow, sg));
 	COLOR = vec4(rgb, a);
 }

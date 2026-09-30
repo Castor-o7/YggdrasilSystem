@@ -56,13 +56,41 @@ func breath() -> float:
 ## frontmost bud, the star heads, the warp seam's core.
 var headroom := 1.0
 
+## Light for a plain screen. The tree was tuned on a Retina panel: about
+## two device pixels to a design pixel, so a 1.5 hairline is three pixels
+## and its halo has room to show. A 1080p screen stretched from the
+## 1440x900 design gets 1.15 to 1.2: the same hairline is one faint pixel,
+## the halos a smudge, the twig tips pinpricks. `hair` widens a hairline
+## back to the Mac's weight in pixels; `lift` (0..1) is how far the light
+## is lifted to make up the rest: a glow under every bough, a bloom under
+## every light. Keyed on the screen, never the OS: a Retina screen (scale
+## 2, or two pixels to the design pixel) keeps 1.0 and 0.
+const MAC_PX := 2.0
+var hair := 1.0
+var lift := 0.0
+
 
 func _ready() -> void:
 	var win := get_window()
 	headroom = win.get_output_max_linear_value()
 	win.output_max_linear_value_changed.connect(func(v: float) -> void:
 		headroom = v
-		changed.emit())
+		_measure())
+	win.size_changed.connect(_measure)
+	win.dpi_changed.connect(_measure)   # moved to a screen of another density
+	_measure()
+
+
+## Device pixels per design pixel: the window's stretch, or the screen's
+## own scale (2 on a Retina Mac) if that says more. Headroom fades the lift
+## out too: a screen with light to spend past white has its own glow.
+func _measure() -> void:
+	var win := get_window()
+	var px := maxf(win.get_final_transform().get_scale().x, DisplayServer.screen_get_scale(win.current_screen))
+	var room := clampf(2.0 - headroom, 0.0, 1.0)
+	hair = 1.0 + (clampf(MAC_PX / maxf(px, 0.01), 1.0, 1.8) - 1.0) * room
+	lift = clampf((hair - 1.0) / 0.6, 0.0, 1.0)
+	changed.emit()
 
 
 func emit(c: Color, heat: float) -> Color:

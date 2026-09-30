@@ -68,6 +68,10 @@ const BOUGH_PX := 14.0           # the Line2D's width: room for the halo
 ## Heat follows the app's CPU with inertia: the helper samples once a
 ## second and the raw samples are noisy; the halo and the sap must not.
 const HEAT_TAU := 1.5
+## Lifted light (Palette.lift, a plain screen): a soft round glow, baked
+## once, laid under the OS node, the buds and the twig tips when the crown
+## is drawn. No blur pass; the crown still redraws only on change.
+var _bloom: Texture2D
 
 
 ## Azimuth turns about the trunk: 0 is right, PI/2 toward the viewer, PI
@@ -87,6 +91,7 @@ class Branch:
 
 func _ready() -> void:
 	_font = ThemeDB.fallback_font
+	_bloom = _bloom_texture()
 	_mat = ShaderMaterial.new()
 	_mat.shader = BOUGH_SHADER
 	_mat.set_shader_parameter("frame_color", Palette.color("frame"))
@@ -242,10 +247,12 @@ func _lay_out() -> void:
 	var breathe := 0.85 + 0.15 * Palette.breath()
 	_mat.set_shader_parameter("breath", Palette.breath())
 	_mat.set_shader_parameter("headroom", Palette.headroom)
+	_mat.set_shader_parameter("hair", Palette.hair)
+	_mat.set_shader_parameter("lift", Palette.lift)
 	# The geometry (curves, projection, order) is rebuilt only when a
 	# branch has moved: its angles, growth or length. Heat, sap and the
 	# breath are set every frame and cost nothing.
-	var key: Array = [_os]
+	var key: Array = [_os, Palette.hair, Palette.lift]
 	for id in _branches:
 		var b: Branch = _branches[id]
 		var app = Workspace.apps.get(id)
@@ -287,7 +294,13 @@ func _build_geometry() -> void:
 			pts.append(_project(p))
 		bough.visible = true
 		bough.points = pts
-		bough.width = BOUGH_PX * lerpf(0.8, 1.2, near)
+		bough.width = BOUGH_PX * lerpf(0.8, 1.2, near) * (1.0 + Palette.lift)
+		# Lifted, the glow fills the strip, and a round cap would fan it
+		# out past the ends: they are square, and the shader fades them. A
+		# faint lift keeps the round caps; its glow is too slight to fan.
+		var cap := Line2D.LINE_CAP_NONE if Palette.lift >= 0.5 else Line2D.LINE_CAP_ROUND
+		bough.begin_cap_mode = cap
+		bough.end_cap_mode = cap
 		bough.set_instance_shader_parameter("near", near)
 		bough.set_instance_shader_parameter("px_width", bough.width)
 		_laid.append([tip3.z, b, app, pts3, pts, near, k, b.heat, bough])
@@ -300,7 +313,7 @@ func _build_geometry() -> void:
 
 ## Redraw the crown only when what it shows has changed.
 func _redraw_crown_if_changed() -> void:
-	var sig: Array = [_os, _root]
+	var sig: Array = [_os, _root, Palette.hair, Palette.lift]
 	for entry in _laid:
 		var b: Branch = entry[1]
 		var app = entry[2]
@@ -344,10 +357,16 @@ func _draw_crown() -> void:
 	var frame := Palette.color("frame")
 	var light := Palette.color("light")
 	var gold := Palette.color("core")
+	var hair := Palette.hair
+	var lift := Palette.lift
+	var up := 1.0 + 1.2 * lift
 	var c := _crown
-	c.draw_line(_root, _os, Palette.dim(frame, 0.35), 1.0, true)
+	c.draw_line(_root, _os, Palette.dim(frame, 0.35 + 0.15 * lift), hair, true)
 	c.draw_circle(_os, 18.0, Palette.dim(light, 0.05))
 	c.draw_circle(_os, 9.0, Palette.dim(light, 0.14))
+	if lift > 0.0:
+		_glow(_os, 56.0, Palette.dim(light, 0.1 * lift))
+		_glow(_os, 16.0, Palette.dim(light, 0.4 * lift))
 	for entry in _laid:
 		var b: Branch = entry[1]
 		var app = entry[2]
@@ -361,12 +380,12 @@ func _draw_crown() -> void:
 		# the signature), not the geometry's; the alpha is before the breath.
 		var heat: float = entry[7]
 		var col := frame.lerp(light, 0.4 * heat).lerp(gold, 0.5 * heat * heat)
-		var alpha := lerpf(0.16, 0.5, heat) * b.life
+		var alpha := lerpf(lerpf(0.16, 0.3, lift), 0.5, heat) * b.life
 		if app.alive and app.hidden:
 			alpha *= 0.55
 		if app.active:
 			alpha = maxf(alpha, 0.42)
-		alpha = minf(1.0, alpha * lerpf(0.5, 1.1, near))
+		alpha = minf(1.0, alpha * lerpf(lerpf(0.5, 0.65, lift), 1.1, near))
 		var tip3: Vector3 = pts3[-1]
 		var tip := pts[-1]
 		var d3 := (pts3[-1] - pts3[-2]).normalized()
@@ -377,6 +396,8 @@ func _draw_crown() -> void:
 		var side2 := side.cross(d3).normalized()
 		var fan_axis := (side2 * cos(TWIG_ROLL) + side * sin(TWIG_ROLL)).normalized()
 		var count := b.twigs.size()
+		# Lifted, the front app's fan of windows keeps up with its bough.
+		var fan := 1.0 + 0.3 * lift if app.active else 1.0
 		for j in count:
 			var g: float = b.twigs[j]
 			if g <= 0.0:
@@ -385,26 +406,56 @@ func _draw_crown() -> void:
 			var a := (t - 0.5) * TWIG_FAN
 			var end3 := tip3 + (d3 * cos(a) + fan_axis * sin(a)).normalized() * TWIG_LEN * g
 			var end := _project(end3)
-			c.draw_line(tip, end, Palette.dim(col, alpha * 0.8), lerpf(FAR_WIDTH, 1.0, near), true)
+			c.draw_line(tip, end, Palette.dim(col, minf(1.0, alpha * (0.8 + 0.5 * lift) * fan)), lerpf(FAR_WIDTH, 1.0, near) * hair * fan, true)
 			if g >= 1.0:
 				var ke := _scale(end3)
 				c.draw_circle(end, 2.6 * ke, Palette.dim(light, 0.07 * b.life))
-				c.draw_circle(end, 1.0 * ke, Palette.dim(light, 0.55 * b.life))
+				if lift > 0.0:
+					_glow(end, 8.0 * ke, Palette.dim(light, 0.5 * lift * b.life))
+				c.draw_circle(end, 1.0 * ke * (1.0 + 0.2 * lift), Palette.dim(light, (0.55 + 0.3 * lift) * b.life))
 		# The tip: a bud, gold and haloed when the app is frontmost.
 		if app.active:
 			c.draw_circle(tip, 9.0 * k, Palette.dim(gold, 0.10))
+			if lift > 0.0:
+				_glow(tip, (36.0 + 8.0 * lift) * k, Palette.dim(gold, (0.5 + 0.05 * lift) * lift))
 			c.draw_circle(tip, 4.5 * k, Palette.dim(Palette.emit(gold, 0.5), 0.22))
 		else:
-			c.draw_circle(tip, 1.4 * k, Palette.dim(light, 0.6 * b.life))
+			if lift > 0.0:
+				_glow(tip, 11.0 * k, Palette.dim(light, 0.5 * lift * b.life))
+			c.draw_circle(tip, 1.4 * k * (1.0 + 0.2 * lift), Palette.dim(light, 0.6 * b.life))
 		# The name, thin and uppercase, set off the tip on the branch's side;
-		# nearer names are a little larger.
+		# nearer names are a little larger; lifted, brighter.
 		var label: String = str(app.name).to_upper()
 		var px := clampi(roundi(LABEL_SIZE * k), 8, 12)
 		var w := _font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, px).x
 		var off := Vector2.from_angle(dir) * (TWIG_LEN * k + 14.0)
 		var at := tip + off + Vector2(-w * 0.5 if absf(cos(dir)) < 0.35 else (0.0 if cos(dir) > 0.0 else -w), 3.0)
 		var label_alpha := (0.7 if app.active else 0.3) * b.life * lerpf(0.6, 1.0, near)
+		# A hidden app's name is lifted less: it stays a step below.
+		label_alpha = minf(1.0, label_alpha * (1.0 + 0.5 * lift if app.alive and app.hidden else up))
 		c.draw_string(_font, at, label, HORIZONTAL_ALIGNMENT_LEFT, -1, px, Palette.dim(light, label_alpha))
+
+
+## A soft round light of `radius` on the crown, `color` its centre.
+func _glow(at: Vector2, radius: float, color: Color) -> void:
+	_crown.draw_texture_rect(_bloom, Rect2(at - Vector2(radius, radius), Vector2(radius, radius) * 2.0), false, color)
+
+
+## The bloom: white at the centre, falling off about as a Gaussian does
+## (a third of the radius is its width), to nothing at the edge.
+static func _bloom_texture() -> Texture2D:
+	var g := Gradient.new()
+	g.offsets = PackedFloat32Array([0.0, 0.12, 0.25, 0.4, 0.55, 0.75, 1.0])
+	g.colors = PackedColorArray([Color(1, 1, 1, 1.0), Color(1, 1, 1, 0.78), Color(1, 1, 1, 0.45),
+		Color(1, 1, 1, 0.2), Color(1, 1, 1, 0.08), Color(1, 1, 1, 0.02), Color(1, 1, 1, 0.0)])
+	var t := GradientTexture2D.new()
+	t.gradient = g
+	t.fill = GradientTexture2D.FILL_RADIAL
+	t.fill_from = Vector2(0.5, 0.5)
+	t.fill_to = Vector2(1.0, 0.5)
+	t.width = 64
+	t.height = 64
+	return t
 
 
 ## The lights that do not breathe: the OS node's core and the frontmost bud's.
