@@ -2,6 +2,7 @@
 # Start the Yggdrasil System at login, or stop doing so.
 #   tools/launch_agent.sh install
 #   tools/launch_agent.sh remove
+#   tools/launch_agent.sh unzen      (Linux: hand back a zen left behind)
 # Uses the built app; run tools/build_app.sh first. Installing also
 # starts it now. NERViewer has its own agent (../NERViewer/tools); with
 # both installed the cockpit finds NERViewer already up and docks it,
@@ -14,7 +15,11 @@
 # Godot dies on SIGTERM without a word, so zen would never be released
 # (panels left auto-hidden, Konsole left clear and borderless); the unit
 # instead stops it the way the Q key or a window close does, through
-# `close` below, and systemd's SIGTERM only follows if that hangs.
+# `close` below, and systemd's SIGTERM only follows if that hangs. When
+# the cockpit is killed instead (a logout where Xwayland goes first, a
+# closed terminal), the helper's watchdog hands zen back from prefs
+# (`unzen` below does it by hand: a SIGKILL of the whole unit, a power
+# cut).
 set -e
 cd "$(dirname "$0")/.."
 LABEL=edu.pdx.josh.yggdrasil
@@ -29,9 +34,10 @@ if [ "$(uname)" = "Linux" ]; then
       [ -x "$BIN" ] || { echo "build the app first: tools/build_app.sh"; exit 1; }
       mkdir -p "$UNIT_DIR"
       # Restart=no mirrors KeepAlive false: Q quits for the session.
-      # After= plasmashell and KWin: systemd stops in reverse order, so at
-      # logout the cockpit closes (and hands the panels and Konsole frames
-      # back through them) while both are still up.
+      # After= plasmashell and KWin: systemd stops in reverse order, so
+      # when systemd stops it before them, the cockpit closes (and hands
+      # the panels and Konsole frames back through them) while both are
+      # still up.
       cat > "$UNIT" <<UN
 [Unit]
 Description=Yggdrasil System (desktop cockpit)
@@ -84,8 +90,17 @@ UN
       "$Q" org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "$NAME" >/dev/null 2>&1 || true
       rm -f "$JS"
       ;;
+    unzen)
+      # Zen handed back from prefs, as the watchdog does after a kill:
+      # the panels, Konsole's profile and bars, the window frames. Refuses
+      # while a cockpit is flying (its Z or Q does it).
+      if [ -x "$BIN" ]; then
+        exec "$BIN" --headless -- --unzen
+      fi
+      exec godot --path game --headless -- --unzen
+      ;;
     *)
-      echo "usage: $0 install|remove"; exit 2
+      echo "usage: $0 install|remove|unzen"; exit 2
       ;;
   esac
   exit 0

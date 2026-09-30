@@ -24,6 +24,9 @@ extends Node2D
 ## gear does not; zen restores the system's own settings when it ends or the
 ## cockpit quits. What zen does to the desktop, on either system, is
 ## scripts/desk.gd's business; this file only says when.
+## Linux: Godot dies on SIGTERM, SIGHUP and SIGINT without a word, so a
+## cockpit killed in zen never hands it back itself. The helper's watchdog
+## runs this program again, headless, with `--unzen <pid>` (see _unzen).
 
 const PREFS := "user://prefs.cfg"
 const DESIGN := Vector2i(1440, 900)
@@ -95,9 +98,19 @@ var persist := true
 ## the live one. It runs with persist off instead: it only watches.
 const LOCK := "user://cockpit.pid"
 var _lock_held := false
+## What the guard's release did, one line per run (see _unzen).
+const GUARD_LOG := "user://zen_guard.log"
+var _quitting := false
 
 
 func _ready() -> void:
+	if Desk.LINUX and "--unzen" in OS.get_cmdline_user_args():
+		# The guard's release: before the lock, which it never takes, so a
+		# cockpit started meanwhile keeps the helm.
+		set_process(false)
+		_unzen()
+		get_tree().quit()
+		return
 	if persist and not _take_lock():
 		persist = false
 	get_window().size_changed.connect(_update_passthrough)
@@ -204,6 +217,11 @@ var _term_prev := ""
 ## or loaded from prefs.
 var _term_prev_file := ""
 var _term_file_known := false
+## Linux: Konsole's layout from before zen (Desk.konsole_layout), and
+## whether zen has hidden any of its bars; both in prefs, for a release
+## with no Konsole left to ask, or none that remembers.
+var _konsole_prev := {}
+var bars_hidden := false
 
 
 func set_zen(on: bool) -> void:
@@ -221,23 +239,33 @@ func set_zen(on: bool) -> void:
 			_zen_prev = read
 		_remember_terminal(Desk.terminal_current())
 		_remember_terminal_file()
+		if Desk.LINUX:
+			# Unlike the chrome's, an older snapshot is never worth keeping:
+			# a restart with zen on never gets here, so it could only be a
+			# stale layout from an earlier zen, and a failed read ({}) just
+			# skips the offline layout step.
+			_konsole_prev = Desk.konsole_layout()
 	zen = on
 	_zen_paint()
 	_desk_zen(on)
 	_refit_soon()
 	_apply_terminal(on)
+	if not on:
+		bars_hidden = false
+		Desk.hid_bars = false
+		Desk.menubar_back = false
 	_save_prefs()
 
 
 ## The desktop's chrome in or out, but only with a record of how it was:
 ## without one zen leaves the Dock and menu bar, or the panels, alone both
 ## ways (handing back nothing would turn macOS's auto-hide off).
-func _desk_zen(on: bool) -> void:
+func _desk_zen(on: bool, careful := false) -> String:
 	if _zen_prev.is_empty():
 		if on:
 			print("zen: could not read the desktop's chrome; leaving it as it is")
-		return
-	Desk.zen_apply(on, _zen_prev)
+		return "skipped (no record)"
+	return Desk.zen_apply(on, _zen_prev, careful)
 
 
 ## The profile to hand the terminal back. Never the zen profile itself: if
@@ -263,6 +291,7 @@ func _apply_terminal(on: bool) -> void:
 	_resweeps = 0
 	if not profile.is_empty() and (not on or Desk.terminal_ready()):
 		_owe_sweep(not Desk.terminal_set(profile) and on)
+		_note_bars()
 	if not on:
 		Desk.terminal_unstick(_terminal_file())
 
@@ -296,7 +325,16 @@ func _on_workspace_changed() -> void:
 	var n: int = app.windows if app != null and app.alive else 0
 	if zen and n > _zen_konsoles:
 		_owe_sweep(not Desk.terminal_set(Desk.TERM_PROFILE))
+		_note_bars()
 	_zen_konsoles = n
+
+
+## Zen hid a Konsole bar: into prefs at once, so a release after a kill
+## knows to show them again.
+func _note_bars() -> void:
+	if zen and Desk.hid_bars and not bars_hidden:
+		bars_hidden = true
+		_save_prefs()
 
 
 func _owe_sweep(owed: bool) -> void:
@@ -320,6 +358,7 @@ func _resweep(dt: float) -> void:
 	_resweep_timer = RESWEEP_SECS
 	if Desk.terminal_set(Desk.TERM_PROFILE):
 		_resweeps = 0
+	_note_bars()
 
 
 ## The lock is the pid of the cockpit holding it and its program (godot,
@@ -329,9 +368,9 @@ func _take_lock() -> bool:
 	if DisplayServer.get_name() == "headless":
 		print("cockpit: headless; leaving the desk alone")
 		return false
-	var held := FileAccess.get_file_as_string(LOCK).split("\n") if FileAccess.file_exists(LOCK) else PackedStringArray()
-	var other := int(held[0].strip_edges()) if held.size() > 0 else 0
-	var program := held[1].strip_edges() if held.size() > 1 else ""
+	var held := _lock_holder()
+	var other: int = held[0]
+	var program: String = held[1]
 	if other > 0 and other != OS.get_process_id() and _cockpit_alive(other, program):
 		print("cockpit: pid %d has the helm; this one only watches" % other)
 		return false
@@ -342,6 +381,12 @@ func _take_lock() -> bool:
 	f.close()
 	_lock_held = true
 	return true
+
+
+## [pid, program] from the lock, [0, ""] with none.
+static func _lock_holder() -> Array:
+	var held := FileAccess.get_file_as_string(LOCK).split("\n") if FileAccess.file_exists(LOCK) else PackedStringArray()
+	return [int(held[0].strip_edges()) if held.size() > 0 else 0, held[1].strip_edges() if held.size() > 1 else ""]
 
 
 func _drop_lock() -> void:
@@ -390,17 +435,116 @@ func _refit_soon() -> void:
 	_screen_burst = SCREEN_BURST
 
 
-## Leaving zen without touching the prefs: the quit path.
-func _release_zen() -> void:
+## Leaving zen without touching the prefs: the quit path, and the guard's
+## release (_unzen), which is `careful` (each part undoes only what zen
+## still holds) and stops when `ours` says a new cockpit has the desk.
+## Konsole's bars are shown again only if zen hid some. Says what each
+## part did, for the guard's log.
+func _release_zen(ours := Callable(), careful := false) -> PackedStringArray:
+	var did := PackedStringArray()
 	if not persist:
-		return  # never took the desk, so has nothing to hand back
+		return did  # never took the desk, so has nothing to hand back
 	Desk.ask_again()
 	if zen:
-		_desk_zen(false)
+		did.append("panels " + _desk_zen(false, careful))
+		if not _still_ours(ours, did):
+			return did
 		if not _term_prev.is_empty():
-			Desk.terminal_set(_term_prev)
-		Desk.terminal_unstick(_terminal_file())
-	Desk.borders(false)
+			Desk.terminal_set(_term_prev, bars_hidden)
+			did.append("konsole " + ("live (%d)" % Desk.terminal_live if Desk.terminal_live > 0 else "none running"))
+		if not _still_ours(ours, did):
+			return did
+		did.append("konsolerc " + ("handed back" if Desk.terminal_unstick(_terminal_file()) else "left"))
+		# konsole_layout_offline checks /proc itself for a live Konsole; the
+		# bus listing may predate a wait for plasmashell.
+		if careful and bars_hidden:
+			if not _still_ours(ours, did):
+				return did
+			did.append("layout " + Desk.konsole_layout_offline(_konsole_prev))
+	if not _still_ours(ours, did):
+		return did
+	did.append("frames " + ("live" if Desk.borders(false) else "skipped"))
+	return did
+
+
+func _still_ours(ours: Callable, did: PackedStringArray) -> bool:
+	if not ours.is_valid() or ours.call():
+		return true
+	did.append("stopped (a new cockpit has the desk)")
+	return false
+
+
+## Q or Escape: prefs, zen, NERViewer, gone.
+func _quit() -> void:
+	if _quitting:
+		return
+	_quitting = true
+	_save_prefs()
+	_release_zen()
+	if _nerviewer_dock:
+		_nerviewer_dock.release()
+	get_tree().quit()
+
+
+## `--unzen [pid]` (Linux, headless): hand zen back from prefs for a
+## cockpit that died holding it. The helper's watchdog runs it with the
+## dead cockpit's pid (yggapps.py zen_guard), which the lock must still
+## name; tools/launch_agent.sh unzen runs it bare, and then no live
+## cockpit may hold the lock. Never takes the lock and never saves the
+## prefs, so the next start re-zens as before; drops the dead cockpit's
+## lock after, so no later guard repeats it.
+func _unzen() -> void:
+	var args := OS.get_cmdline_user_args()
+	var at := args.find("--unzen")
+	var dead := int(args[at + 1]) if at + 1 < args.size() and args[at + 1].is_valid_int() else 0
+	var held := _lock_holder()
+	var who := "pid %d" % dead if dead > 0 else "by hand"
+	var ours: Callable
+	if dead > 0:
+		if held[0] != dead:
+			return  # a clean quit after all, or a new cockpit has the helm
+		ours = func() -> bool: return _lock_holder()[0] == dead
+	else:
+		if held[0] > 0 and _cockpit_alive(held[0], held[1]):
+			print("unzen: pid %d is flying; Z or Q hands zen back" % held[0])
+			return
+		ours = func() -> bool:
+			var now := _lock_holder()
+			return now[0] == held[0] or not _cockpit_alive(now[0], now[1])
+	var cfg := ConfigFile.new()
+	if cfg.load(PREFS) != OK or not bool(cfg.get_value("zen", "on", false)):
+		_guard_log(who, "zen was off; nothing to hand back")
+		return
+	_zen_prev = Desk.zen_load(cfg)
+	_remember_terminal(str(cfg.get_value("zen", "prev_terminal", "")))
+	if cfg.has_section_key("zen", "prev_terminal_file"):
+		_term_prev_file = str(cfg.get_value("zen", "prev_terminal_file"))
+		_term_file_known = true
+	_load_konsole_prev(cfg)
+	zen = true
+	var did := _release_zen(ours, true)
+	var now := _lock_holder()
+	if now[0] > 0 and now[0] == held[0] and not _cockpit_alive(now[0], now[1]):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(LOCK))
+	_guard_log(who, ", ".join(did))
+
+
+func _guard_log(who: String, what: String) -> void:
+	var line := "%s %s: %s" % [Time.get_datetime_string_from_system(), who, what]
+	print("unzen: ", line)
+	var f := FileAccess.open(GUARD_LOG, FileAccess.READ_WRITE if FileAccess.file_exists(GUARD_LOG) else FileAccess.WRITE)
+	if f != null:
+		f.seek_end()
+		f.store_line(line)
+
+
+## Konsole's pre-zen layout and bars_hidden from prefs; with them the
+## menu bar comes back on the way out where zen's memory of it is lost.
+func _load_konsole_prev(cfg: ConfigFile) -> void:
+	bars_hidden = bool(cfg.get_value("zen", "bars_hidden", false))
+	if cfg.has_section_key("zen", "prev_konsole_state") and cfg.has_section_key("zen", "prev_menubar"):
+		_konsole_prev = {"state": str(cfg.get_value("zen", "prev_konsole_state")), "menubar": str(cfg.get_value("zen", "prev_menubar"))}
+	Desk.menubar_back = bars_hidden and not _konsole_prev.is_empty() and _konsole_prev["menubar"] != "Disabled"
 
 
 func set_hud(on: bool) -> void:
@@ -540,6 +684,7 @@ func _load_prefs() -> void:
 	if cfg.has_section_key("zen", "prev_terminal_file"):
 		_term_prev_file = str(cfg.get_value("zen", "prev_terminal_file"))
 		_term_file_known = true
+	_load_konsole_prev(cfg)
 	zen = bool(cfg.get_value("zen", "on", false))
 	if want_desktop:
 		set_desktop(true)
@@ -572,6 +717,11 @@ func _save_prefs() -> void:
 	cfg.set_value("zen", "prev_terminal", _term_prev)
 	if _term_file_known:
 		cfg.set_value("zen", "prev_terminal_file", _term_prev_file)
+	if Desk.LINUX:
+		cfg.set_value("zen", "bars_hidden", bars_hidden)
+		if not _konsole_prev.is_empty():
+			cfg.set_value("zen", "prev_konsole_state", _konsole_prev["state"])
+			cfg.set_value("zen", "prev_menubar", _konsole_prev["menubar"])
 	# The layout as loaded, under the layout as it stands: a save before
 	# the blocks are docked keeps their places.
 	var at: Dictionary = hull.arrangement()
@@ -682,11 +832,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		KEY_C:
 			set_chrono(not chrono_shown)
 		KEY_Q, KEY_ESCAPE:
-			_save_prefs()
-			_release_zen()
-			if _nerviewer_dock:
-				_nerviewer_dock.release()
-			get_tree().quit()
+			_quit()
 		KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9:
 			_helm(event.keycode - KEY_0)
 		KEY_0:

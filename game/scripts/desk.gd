@@ -37,6 +37,15 @@ const ZEN_SET := 'tell application "System Events" to tell dock preferences to s
 const PANELS_GET := 'print(JSON.stringify(panels().map(function (p) { var g = screenGeometry(p.screen); return {id: String(p.id), hiding: p.hiding, loc: p.location, h: p.height, floating: p.floating, g: [g.x, g.y, g.width, g.height]}; })))'
 const PANELS_HIDE := 'panels().forEach(function (p) { p.hiding = "autohide"; })'
 const PANELS_SET := 'var want = %s; panels().forEach(function (p) { var h = want[String(p.id)]; if (h !== undefined) p.hiding = h; })'
+## Careful (the guard's release, main.gd _unzen): only a panel zen still
+## holds, so one set otherwise since stays as it was set.
+const PANELS_SET_CAREFUL := 'var want = %s; panels().forEach(function (p) { var h = want[String(p.id)]; if (h !== undefined && p.hiding == "autohide") p.hiding = h; })'
+## plasmashellrc's panelVisibility for each hiding mode (Plasma 6's
+## PanelView::VisibilityMode), for the offline hand-back.
+const HIDING := {"none": 0, "autohide": 1, "dodgewindows": 2, "windowsgobelow": 3}
+## How long the guard's release waits for plasmashell to exit before
+## giving the panels up (see _panels_offline).
+const OFFLINE_WAIT := 15.0
 
 
 ## What zen will hand back: {dock, menu} on macOS, {panels: {id: hiding}}
@@ -57,20 +66,103 @@ static func zen_read() -> Dictionary:
 	return {}
 
 
-## On: hide the chrome. Off: hand back `prev`, as zen_read gave it.
-static func zen_apply(on: bool, prev: Dictionary) -> void:
+## On: hide the chrome. Off: hand back `prev`, as zen_read gave it;
+## `careful` (the guard's release) only what zen still holds. Linux, off:
+## with plasmashell gone from the bus, its file instead (_panels_offline).
+## Says how it went, for the guard's log.
+static func zen_apply(on: bool, prev: Dictionary, careful := false) -> String:
 	if MAC:
 		var dock: bool = true if on else bool(prev.get("dock", false))
 		var menu: bool = true if on else bool(prev.get("menu", false))
 		Osa.fire(ZEN_SET % [str(dock).to_lower(), str(menu).to_lower()])
-	elif LINUX:
-		if on:
-			_plasma(PANELS_HIDE, WRITE_SECS)
+		return "live"
+	if not LINUX:
+		return "skipped"
+	var how := "live"
+	if on:
+		_plasma(PANELS_HIDE, WRITE_SECS)
+	else:
+		var want: Dictionary = prev.get("panels", {})
+		if want.is_empty():
+			how = "skipped"
 		else:
-			var want: Dictionary = prev.get("panels", {})
-			if not want.is_empty():
-				_plasma(PANELS_SET % JSON.stringify(want), WRITE_SECS)
-		_panels_at = -1  # the struts just changed; usable_rect asks again
+			_plasma((PANELS_SET_CAREFUL if careful else PANELS_SET) % JSON.stringify(want), WRITE_SECS)
+			if _failed:
+				how = "failed live" if _on_bus("org.kde.plasmashell") else _panels_offline(want, OFFLINE_WAIT if careful else 0.0)
+	_panels_at = -1  # the struts just changed; usable_rect asks again
+	return how
+
+
+## The panels handed back through plasmashellrc, for a plasmashell already
+## off the bus (a logout that took it first). plasmashell syncs its config
+## lazily and again at exit, so a file edit only holds once it is gone: it
+## waits up to `wait` seconds for every plasmashell of this session (our
+## uid, our bus) to exit, and gives up past that. A panel is written only
+## if the file still says auto-hide and zen found it otherwise.
+static func _panels_offline(want: Dictionary, wait: float) -> String:
+	var until := Time.get_ticks_msec() + int(wait * 1000.0)
+	var left := _session_procs("plasmashell")
+	while not left.is_empty():
+		if Time.get_ticks_msec() >= until:
+			return "gave up (plasmashell %s still running)" % str(left[0])
+		OS.delay_msec(250)
+		_trees_frame = -1  # a listing from before the wait is stale after it
+		left = _session_procs("plasmashell")
+	var n := 0
+	for id in want:
+		var mode = HIDING.get(str(want[id]))
+		if mode == null or str(want[id]) == "autohide":
+			continue
+		var key := ["--file", "plasmashellrc", "--group", "PlasmaViews", "--group", "Panel %s" % id, "--key", "panelVisibility"]
+		if _run("kreadconfig6", key, WRITE_SECS) != "1" or _failed:
+			continue
+		_run("kwriteconfig6", key + [str(mode)], WRITE_SECS)
+		n += 0 if _failed else 1
+	return "offline (%d written)" % n
+
+
+## This session's processes named `comm`: our uid and our session bus (a
+## plasmashell or Konsole of another login is not ours to wait for). One
+## whose bus cannot be read counts as ours; a zombie does not count.
+static func _session_procs(comm: String) -> Array:
+	var me := _uid(_read_proc("/proc/self/status"))
+	var addr := OS.get_environment("DBUS_SESSION_BUS_ADDRESS")
+	var found := []
+	for d in DirAccess.get_directories_at("/proc"):
+		if not d.is_valid_int() or _read_proc("/proc/%s/comm" % d).strip_edges() != comm:
+			continue
+		var status := _read_proc("/proc/%s/status" % d)
+		if _uid(status) != me or "\nState:\tZ" in status:
+			continue  # another user's, or a zombie: gone all but the name
+		if not addr.is_empty():
+			var theirs := ""
+			for kv in _read_proc("/proc/%s/environ" % d, 65536).split("\n", false):
+				if kv.begins_with("DBUS_SESSION_BUS_ADDRESS="):
+					theirs = kv.trim_prefix("DBUS_SESSION_BUS_ADDRESS=")
+			if not theirs.is_empty() and theirs != addr:
+				continue
+		found.append(int(d))
+	return found
+
+
+## A /proc file through a handle (they report a length of 0), NULs (an
+## environ's separators) read as line breaks.
+static func _read_proc(path: String, most := 4096) -> String:
+	var f := FileAccess.open(path, FileAccess.READ)
+	if f == null:
+		return ""
+	var raw := f.get_buffer(most)
+	for i in raw.size():
+		if raw[i] == 0:
+			raw[i] = 10
+	return raw.get_string_from_utf8()
+
+
+static func _uid(status: String) -> String:
+	for line in status.split("\n"):
+		if line.begins_with("Uid:"):
+			return line.split("\t", false)[1] if line.split("\t", false).size() > 1 else ""
+	return ""
 
 
 ## The previous values live in prefs beside the rest of zen. macOS keeps
@@ -180,15 +272,16 @@ static func terminal_default_file() -> String:
 ## Hand konsolerc back `file` ("" for the built-in profile), but only if
 ## zen's profile is still the default there: a default Josh picked since
 ## is his.
-static func terminal_unstick(file: String) -> void:
+static func terminal_unstick(file: String) -> bool:
 	if not LINUX or terminal_default_file() != TERM_PROFILE + ".profile":
-		return
+		return false
 	var args := ["--file", "konsolerc", "--group", "Desktop Entry", "--key", "DefaultProfile"]
 	if file.is_empty() or file == TERM_PROFILE + ".profile":
 		args.append("--delete")
 	else:
 		args.append(file)
 	_run("kwriteconfig6", args, WRITE_SECS)
+	return not _failed
 
 
 ## The file a Konsole profile named `name` lives in (the user's profiles,
@@ -251,14 +344,20 @@ static func terminal_prepare() -> void:
 ## Konsole that predates the profile file does not know it, and is named
 ## once so the reason it stayed opaque is on record.
 ## False when going to zen left a Konsole unasked (no answer, or a window
-## not on the bus yet), so the caller can sweep again later.
-static func terminal_set(profile: String) -> bool:
+## not on the bus yet), so the caller can sweep again later. `bars` false
+## leaves the toolbars and menu bars be on the way back (zen never hid
+## any). terminal_live counts the Konsoles the last call found.
+static var terminal_live := 0
+
+
+static func terminal_set(profile: String, bars := true) -> bool:
 	if MAC:
 		Osa.fire(TERM_SET % [profile, profile, profile])
 		return true
 	if not LINUX:
 		return true
 	var all := true
+	terminal_live = _konsoles().size()
 	for svc in _konsoles():
 		var windows := _objects(svc, "/Windows/")
 		if profile == TERM_PROFILE and windows.is_empty():
@@ -281,7 +380,8 @@ static func terminal_set(profile: String) -> bool:
 		for obj in _objects(svc, "/Sessions/"):
 			if not back or _qdbus([svc, obj, "org.kde.konsole.Session.profile"]) == TERM_PROFILE:
 				_qdbus([svc, obj, "org.kde.konsole.Session.setProfile", profile], WRITE_SECS)
-		_toolbars(svc, not back)
+		if bars or not back:
+			_toolbars(svc, not back)
 	return all
 
 
@@ -300,9 +400,14 @@ static var _knows_zen: PackedStringArray = []
 ## Konsole; macOS's is global and zen hides it). It goes the same way,
 ## through the window's Show Menubar action, and comes back only where it
 ## was showing; with no memory it is left alone, since off is the one
-## Josh chose.
+## Josh chose, unless menubar_back says it was on before zen (konsolerc,
+## read at zen-on and kept in prefs).
+## hid_bars: zen has hidden a bar or a menu bar (main.gd keeps it in
+## prefs, so a release after a kill knows whether to show them again).
 static var _shown_toolbars := {}
 static var _shown_menubars := {}
+static var hid_bars := false
+static var menubar_back := false
 const MENUBAR := "/actions/options_show_menubar"
 
 
@@ -317,16 +422,20 @@ static func _toolbars(svc: String, hide: bool) -> void:
 				if _qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.isToolBarVisible", bar]) == "true":
 					shown.append(bar)
 					_qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.setToolBarVisible", bar, "false"], WRITE_SECS)
+					hid_bars = true
 			_shown_toolbars[key] = shown
 			# trigger, not setChecked: the menu bar follows the action's
 			# triggered signal, which setChecked does not send.
 			if _menubar_shown(svc, win):
 				_qdbus([svc, win + MENUBAR, "org.qtproject.Qt.QAction.trigger"], WRITE_SECS)
 				_shown_menubars[key] = true
+				hid_bars = true
 		else:
 			var bars = _shown_toolbars.get(key, null)
 			if bars == null:
 				bars = _bar_names(svc, win)
+				if menubar_back:
+					_shown_menubars[key] = true
 			for bar in bars:
 				_qdbus([svc, win, "org.kde.konsole.KXmlGuiWindow.setToolBarVisible", bar, "true"], WRITE_SECS)
 			_shown_toolbars.erase(key)
@@ -352,6 +461,52 @@ static func _bar_names(svc: String, win: String) -> PackedStringArray:
 
 static func _menubar_shown(svc: String, win: String) -> bool:
 	return _qdbus([svc, win + MENUBAR, "org.qtproject.Qt.QAction.checked"]) == "true"
+
+
+## Konsole's layout as zen found it, for a release with no Konsole left
+## to ask: konsolestaterc's window State (toolbars included; written by
+## each window as it closes) and konsolerc's MenuBar ("" when unset). {}
+## when either read failed, so it never replaces an answer.
+static func konsole_layout() -> Dictionary:
+	if not LINUX:
+		return {}
+	var state := _run("kreadconfig6", ["--file", _konsole_state_file(), "--group", "MainWindow", "--key", "State"], WRITE_SECS)
+	if _failed:
+		return {}
+	var menubar := _run("kreadconfig6", ["--file", "konsolerc", "--group", "MainWindow", "--key", "MenuBar"], WRITE_SECS)
+	if _failed:
+		return {}
+	return {"state": state, "menubar": menubar}
+
+
+## The guard's release, with no Konsole of ours running: a window closed
+## in zen saved its bars hidden, so the next one would open that way.
+## Each entry goes back to `lay` (konsole_layout's) only where it moved.
+static func konsole_layout_offline(lay: Dictionary) -> String:
+	if not LINUX or lay.is_empty():
+		return "skipped"
+	if not _session_procs("konsole").is_empty():
+		return "skipped (Konsole running)"
+	var n := 0
+	var at := ["--file", _konsole_state_file(), "--group", "MainWindow", "--key", "State"]
+	var was := str(lay.get("state", ""))
+	var now := _run("kreadconfig6", at, WRITE_SECS)
+	if not _failed and now != was:
+		_run("kwriteconfig6", at + ([was] if not was.is_empty() else ["--delete"]), WRITE_SECS)
+		n += 0 if _failed else 1
+	at = ["--file", "konsolerc", "--group", "MainWindow", "--key", "MenuBar"]
+	was = str(lay.get("menubar", ""))
+	if _run("kreadconfig6", at, WRITE_SECS) == "Disabled" and not _failed and was != "Disabled":
+		_run("kwriteconfig6", at + ([was] if not was.is_empty() else ["--delete"]), WRITE_SECS)
+		n += 0 if _failed else 1
+	return "offline (%d written)" % n
+
+
+static func _konsole_state_file() -> String:
+	var state := OS.get_environment("XDG_STATE_HOME")
+	if state.is_empty():
+		state = OS.get_environment("HOME").path_join(".local/state")
+	return state.path_join("konsolestaterc")
 
 
 static func _make_profile(rel: String) -> bool:
@@ -412,13 +567,14 @@ callDBus("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting", "unloadScript",
 static var _bare = null
 
 
-static func borders(bare: bool) -> void:
+## True when it asked KWin to change something.
+static func borders(bare: bool) -> bool:
 	if not LINUX or (_bare != null and _bare == bare):
-		return
+		return false
 	var first: bool = _bare == null
 	_bare = bare
 	if first and not bare and not _kwin_loaded(BORDERS_PLUGIN):
-		return
+		return false
 	if bare:
 		_kwin_run(BORDERS_JS, BORDERS_PLUGIN)
 	else:
@@ -427,6 +583,7 @@ static func borders(bare: bool) -> void:
 		# a worker thread after run(), so unloading it from here at once
 		# could beat it to the windows.
 		_kwin_run(CLOTHE_JS % (BORDERS_PLUGIN + "_off"), BORDERS_PLUGIN + "_off")
+	return true
 
 
 ## Loads and runs `js` as `plugin`, first unloading any copy left over
@@ -640,6 +797,14 @@ static func _tree(svc: String) -> String:
 	if not _trees.has(svc):
 		_trees[svc] = _qdbus([svc] if not svc.is_empty() else [])
 	return _trees[svc]
+
+
+## A well-known name on the bus. qdbus6 indents them under their owners.
+static func _on_bus(svc: String) -> bool:
+	for line in _tree("").split("\n"):
+		if line.strip_edges() == svc:
+			return true
+	return false
 
 
 ## Every running Konsole process: each owns org.kde.konsole-<pid>.

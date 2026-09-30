@@ -15,12 +15,21 @@
 # unloads it too if the helper is killed outright (Godot's OS.kill is
 # SIGKILL), so no script is ever left running in the user's KWin.
 #
+# With --guard, that watchdog also stands guard over zen: Godot dies on
+# SIGTERM, SIGHUP and SIGINT without a word (a logout, a unit stop, a
+# closed terminal, kill), so a cockpit killed mid-zen never hands the
+# panels, Konsole's profile and bars or the window frames back. The
+# watchdog outlives it, and if the cockpit's lock (DIR/cockpit.pid, which
+# only a clean quit removes) still names it, runs the command after `--`
+# with its pid: the cockpit itself, headless, releasing zen from prefs.
+#
 # Needs python3, dbus-python and PyGObject (GLib). Without KWin (another
 # desktop) it exits 2 with a message on stderr and the cockpit falls back
 # to its scripted day.
 #
-#   yggapps [--interval 1000] [--once]
+#   yggapps [--interval 1000] [--once] [--guard DIR -- UNZEN_ARGV...]
 
+import fcntl
 import json
 import os
 import signal
@@ -40,8 +49,13 @@ WIN_HZ = 60.0                              # ceiling for the fast "win" lines
 
 interval_ms = 1000
 once = False
+guard_dir = ""             # the cockpit's user dir; "" stands no guard
+unzen_argv = []            # what the guard runs, the cockpit's pid appended
 _args = iter(sys.argv[1:])
 for _a in _args:
+	if _a == "--":
+		unzen_argv = list(_args)
+		break
 	if _a == "--interval":
 		try:
 			_n = int(next(_args, ""))
@@ -51,8 +65,25 @@ for _a in _args:
 			pass
 	elif _a == "--once":
 		once = True
+	elif _a == "--guard":
+		guard_dir = next(_args, "")
+
+
+def start_tick(pid: int):
+	"""(state, start ticks since boot) of a process, or None if it is gone.
+	Fields counted from the last ')', as in process_table."""
+	try:
+		with open("/proc/%d/stat" % pid, "rb") as f:
+			s = f.read()
+		rest = s[s.rfind(b")") + 2:].split()
+		return rest[0], int(rest[19])
+	except (OSError, IndexError, ValueError):
+		return None
+
 
 parent_pid = os.getppid()
+_st = start_tick(parent_pid)
+parent_start = _st[1] if _st else -1   # a reused pid starts later
 
 
 def die(msg: str, code: int) -> None:
@@ -79,7 +110,8 @@ def fork_watchdog(js_path: str) -> None:
 	holds, so any death of the helper, however abrupt, reads as EOF. It
 	forks before the helper touches D-Bus, drops stdio (Godot must see EOF
 	on the helper's stdout when the helper dies) and leaves the process
-	group so a Ctrl-C meant for the cockpit does not reach it first."""
+	group so a Ctrl-C meant for the cockpit does not reach it first. With
+	--guard it then waits out the cockpit too (see zen_guard)."""
 	r, w = os.pipe()
 	if os.fork() != 0:
 		os.close(r)
@@ -100,8 +132,63 @@ def fork_watchdog(js_path: str) -> None:
 			os.unlink(js_path)
 		except OSError:
 			pass
+		if guard_dir and unzen_argv:
+			zen_guard()
 	finally:
 		os._exit(0)
+
+
+# --- Zen guard -------------------------------------------------------------------
+
+GUARD_SETTLE = 0.5         # seconds after the cockpit's death before the release
+GUARD_TRIES = 3            # release runs, while a TERM, HUP or INT cuts one short
+
+
+def cockpit_gone() -> bool:
+	"""No such process, another one on its pid, or a zombie (the project
+	manager that ran it has not reaped it yet): dead all the same."""
+	st = start_tick(parent_pid)
+	return st is None or st[1] != parent_start or st[0] in (b"Z", b"X")
+
+
+def zen_guard() -> None:
+	"""In the watchdog, once the helper is gone: wait out the cockpit (no
+	limit; a helper that failed early still guards), then hand zen back if
+	it died holding the lock. A clean quit removed the lock; a new cockpit
+	has rewritten it. One guard per cockpit: another watchdog (a helper
+	restarted) holding the flock has it in hand.
+	The release runs as a child, not in place: Godot resets every signal
+	it inherits, ignored or blocked (checked 2026-09-29), so it dies on a
+	TERM like the cockpit did. It starts a beat after the death, once the
+	TERM a unit stop sends every process at once has come and gone (the
+	watchdog ignores it), and runs again if a later one kills it; the
+	release only undoes what zen still holds, so a second run is safe.
+	systemd waits for both like any process of the unit."""
+	while not cockpit_gone():
+		time.sleep(0.5)
+	time.sleep(GUARD_SETTLE)
+	try:
+		with open(os.path.join(guard_dir, "cockpit.pid")) as f:
+			if f.readline().strip() != str(parent_pid):
+				return
+		fd = os.open(os.path.join(guard_dir, "zen_guard.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+		fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+	except OSError:
+		return
+	for _ in range(GUARD_TRIES):
+		try:
+			pid = os.fork()
+		except OSError:
+			return
+		if pid == 0:
+			try:
+				os.close(fd)
+				os.execvp(unzen_argv[0], unzen_argv + [str(parent_pid)])
+			finally:
+				os._exit(127)
+		_, status = os.waitpid(pid, 0)
+		if not os.WIFSIGNALED(status) or os.WTERMSIG(status) not in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+			return      # done, failed on its own, or SIGKILLed: systemd's last word
 
 
 # --- The KWin script -----------------------------------------------------------

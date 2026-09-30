@@ -54,7 +54,17 @@ Zen on Plasma swaps the macOS tricks for native ones:
 - Plasma panels slide to auto-hide, and go back to exactly how they were when zen ends.
 - Konsole windows dissolve: every open session switches to a "Yggdrasil" profile (a copy of your default profile with a fully transparent background, made by `tools/konsole_zen_profile.sh`), and a small KWin script takes their borders off, new windows included. Zen off, or quitting, puts your profile and borders back. A Konsole reads its profiles only when it starts, so one already running when the profile is first made (the first cockpit run, or `tools/launch_agent.sh install`) must be restarted before it can dissolve.
 
-Autostart: `tools/launch_agent.sh install` writes a systemd user unit (`~/.config/systemd/user/edu.pdx.josh.yggdrasil.service`) tied to the graphical session and starts it now; `tools/launch_agent.sh remove` undoes it. Stopping the unit, or logging out, closes the cockpit the way Q does, so zen gives your panels and Konsole back first (the unit is ordered after plasmashell and KWin, so both are still there to take them). NERViewer has the same pair.
+Autostart: `tools/launch_agent.sh install` writes a systemd user unit (`~/.config/systemd/user/edu.pdx.josh.yggdrasil.service`) tied to the graphical session and starts it now; `tools/launch_agent.sh remove` undoes it. Stopping the unit closes the cockpit the way Q does, so zen gives your panels and Konsole back first (the unit is ordered after plasmashell and KWin, so when systemd stops it before them both are still there to take them). NERViewer has the same pair.
+
+When the cockpit doesn't get to quit (Godot dies on SIGTERM without a word), zen is still handed back:
+- If the cockpit is killed, crashes, loses its terminal or its unit is stopped, the helper's watchdog hands the panels, Konsole's profile and bars, and window frames back within about a second.
+- Logging out kills the cockpit too; the watchdog hands zen back live if Plasma is still up, or else fixes Plasma's and Konsole's files once plasmashell has exited.
+- Konsole windows that close while zen is on may keep their toolbars hidden until the next zen-off.
+- A SIGKILL of the whole app unit or a power cut leaves zen in place until the cockpit next starts, or until you run `tools/launch_agent.sh unzen`.
+- The Wayland logout order is inferred, not observed. `zen_guard.log` in the cockpit's user dir (`~/.local/share/godot/app_userdata/Yggdrasil System/`) records what the guard did.
+- After updating, rerun `helper/build.sh`; game/bin/yggapps is a copy.
+
+On macOS a logout quits the cockpit through the window close, which hands zen back; a kill -9 or a crash leaves it until the next start.
 
 ## Platform notes
 

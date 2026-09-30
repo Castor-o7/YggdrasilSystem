@@ -51,6 +51,10 @@ var _synthetic_t := 0.0
 
 
 func _ready() -> void:
+	# The headless run that hands zen back (main.gd _unzen) spawns no
+	# helper: one would stand another guard over it.
+	if "--unzen" in OS.get_cmdline_user_args():
+		return
 	start_helper()
 
 
@@ -69,7 +73,15 @@ func start_helper() -> void:
 	if not FileAccess.file_exists(path):
 		_fallback("helper missing at %s; run helper/build.sh" % path)
 		return
-	_proc = OS.execute_with_pipe(path, ["--interval", str(INTERVAL_MS)])
+	var args := ["--interval", str(INTERVAL_MS)]
+	if OS.get_name() == "Linux":
+		# The helper's watchdog hands zen back if the cockpit dies holding
+		# it: this program again, headless, with `--unzen <pid>`.
+		args += ["--guard", ProjectSettings.globalize_path("user://"), "--", OS.get_executable_path()]
+		if not OS.has_feature("template"):
+			args += ["--path", ProjectSettings.globalize_path("res://")]
+		args += ["--headless", "--", "--unzen"]
+	_proc = OS.execute_with_pipe(path, args)
 	if _proc.is_empty():
 		_fallback("could not spawn helper")
 		return
