@@ -380,6 +380,12 @@ func _drop_lock() -> void:
 ## Alive, and still the program that took the lock, so a recycled pid
 ## (after a crash, a reboot) does not hold the helm forever.
 static func _cockpit_alive(pid: int, program: String) -> bool:
+	# Linux: the program the lock names is the resolved executable's, which
+	# a symlink or wrapper keeps out of argv; /proc/<pid>/exe says it true.
+	if Desk.LINUX and not program.is_empty():
+		var proc := DirAccess.open("/proc/%d" % pid)
+		if proc != null and proc.read_link("exe").get_file() == program:
+			return true
 	var cmd := _command_line(pid)
 	return not cmd.is_empty() and (program.is_empty() or program in cmd)
 

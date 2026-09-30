@@ -17,8 +17,10 @@ const BUNDLE_ID := "edu.pdx.josh.nerviewer"
 ## exported cockpit alike), then an installed copy.
 const APP_SIBLING := "NERViewer/dist/NERViewer.app"
 const APP_INSTALLED := "/Applications/NERViewer.app"
-## Linux: the sibling repo's export, else (developing) its Godot project.
-const LINUX_SIBLING := "NERViewer/dist/linux/NERViewer.x86_64"
+## Linux: the sibling repo's export for this machine's architecture
+## (its build_app.sh names it NERViewer.x86_64 or NERViewer.arm64, as
+## Engine.get_architecture_name does), else (developing) its Godot project.
+const LINUX_SIBLING := "NERViewer/dist/linux/NERViewer.%s"
 const LINUX_PROJECT := "NERViewer/game/project.godot"
 ## Wait this long after the workspace starts reporting before launching:
 ## at login NERViewer's own launch agent may still be coming up.
@@ -142,11 +144,19 @@ func _launch_linux() -> void:
 	if config.is_empty():
 		config = OS.get_environment("HOME").path_join(".config")
 	var unit := config.path_join("systemd/user/%s.service" % AGENT)
+	# The unit if it starts; one that will not (its binary moved, the user
+	# manager without a display) falls through to the export. Bounded: a
+	# slow manager must not hold the frame (systemctl waits for the start).
 	if FileAccess.file_exists(unit):
-		OS.create_process("systemctl", ["--user", "start", "%s.service" % AGENT])
-		print("NERViewer dock: started ", AGENT, ".service")
-		return
-	var exe := Paths.find_up(LINUX_SIBLING)
+		var timeout := _which("timeout")
+		var start := PackedStringArray(["systemctl", "--user", "start", "%s.service" % AGENT])
+		var code := _exit_code(timeout, PackedStringArray(["-k", "0.5", "3"]) + start) if not timeout.is_empty() \
+			else _exit_code(_which("systemctl"), start.slice(1))
+		if code == 0:
+			print("NERViewer dock: started ", AGENT, ".service")
+			return
+		print("NERViewer dock: ", AGENT, ".service would not start (", code, "); trying the export")
+	var exe := Paths.find_up(LINUX_SIBLING % Engine.get_architecture_name())
 	if not exe.is_empty():
 		_spawn(PackedStringArray([exe]))
 		print("NERViewer dock: launched ", exe)
