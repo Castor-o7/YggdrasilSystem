@@ -12,8 +12,11 @@
 ## _run). Every Linux call is blocking but short (about 10 ms each on
 ## Josh's machine), which also lets the quit path finish its restores
 ## before the process ends; and bounded, so a peer that stops answering
-## (a busy Konsole, plasmashell restarting) holds a frame at most 1.5 s
-## for a question, 4 s for a change, not qdbus's own 25 s (see _run).
+## (a busy Konsole, plasmashell restarting) holds the desk hand
+## (desk_hand.gd), never a frame, at most 1.5 s for a question, 4 s for a
+## change, not qdbus's own 25 s (see _run).
+## Desk's state (the caches, the bars remembered, the peers left alone) has
+## one thread at a time: see `owner`.
 
 const Paths := preload("res://scripts/paths.gd")
 
@@ -60,7 +63,7 @@ static func zen_read() -> Dictionary:
 		return {"dock": parts[0].strip_edges() == "true", "menu": parts[1].strip_edges() == "true"}
 	if LINUX:
 		var hiding := {}
-		for p in _panels(true):
+		for p in panels_refresh():
 			hiding[str(p.get("id", ""))] = str(p.get("hiding", "none"))
 		return {"panels": hiding} if not hiding.is_empty() else {}
 	return {}
@@ -89,7 +92,9 @@ static func zen_apply(on: bool, prev: Dictionary, careful := false) -> String:
 			_plasma((PANELS_SET_CAREFUL if careful else PANELS_SET) % JSON.stringify(want), WRITE_SECS)
 			if _failed:
 				how = "failed live" if _on_bus("org.kde.plasmashell") else _panels_offline(want, OFFLINE_WAIT if careful else 0.0)
+	_panel_lock.lock()
 	_panels_at = -1  # the struts just changed; usable_rect asks again
+	_panel_lock.unlock()
 	return how
 
 
@@ -106,7 +111,7 @@ static func _panels_offline(want: Dictionary, wait: float) -> String:
 		if Time.get_ticks_msec() >= until:
 			return "gave up (plasmashell %s still running)" % str(left[0])
 		OS.delay_msec(250)
-		_trees_frame = -1  # a listing from before the wait is stale after it
+		_trees.clear()  # a listing from before the wait is stale after it
 		left = _session_procs("plasmashell")
 	var n := 0
 	for id in want:
@@ -167,7 +172,7 @@ static func _uid(status: String) -> String:
 
 ## The previous values live in prefs beside the rest of zen. macOS keeps
 ## its original keys, so an existing prefs file still reads. No record is
-## saved as no keys, so it loads back as {} (see main.gd _desk_zen), never
+## saved as no keys, so it loads back as {} (see zen.gd chrome), never
 ## as a record of nothing to hand back.
 static func zen_save(cfg: ConfigFile, prev: Dictionary) -> void:
 	if MAC and prev.has("dock") and prev.has("menu"):
@@ -326,11 +331,9 @@ static func terminal_ready() -> bool:
 ## Linux only, at startup: a running Konsole never rereads its profile
 ## directory, so the zen profile must exist before a Konsole starts for
 ## that Konsole to be able to switch to it. Made as early as possible,
-## every Konsole opened after the cockpit's first run can dissolve. Not
-## from a headless test run, which should leave the desktop alone.
+## every Konsole opened after the cockpit's first run can dissolve. Asked
+## only by the cockpit holding the lock, which a headless run never takes.
 static func terminal_prepare() -> void:
-	if DisplayServer.get_name() == "headless":
-		return
 	if LINUX and not FileAccess.file_exists(_konsole_profile_path()):
 		_make_profile(TERM_SCRIPT_LINUX)
 
@@ -402,7 +405,7 @@ static var _knows_zen: PackedStringArray = []
 ## was showing; with no memory it is left alone, since off is the one
 ## Josh chose, unless menubar_back says it was on before zen (konsolerc,
 ## read at zen-on and kept in prefs).
-## hid_bars: zen has hidden a bar or a menu bar (main.gd keeps it in
+## hid_bars: zen has hidden a bar or a menu bar (zen.gd's record keeps it in
 ## prefs, so a release after a kill knows whether to show them again).
 static var _shown_toolbars := {}
 static var _shown_menubars := {}
@@ -621,21 +624,29 @@ static func _kwin_unload(plugin: String) -> void:
 ## screen by it, so on Josh's two monitors the 1440-high screen came back
 ## 1036 high, the 1080 screen's panel cut taken off both. On Linux the
 ## cockpit works it out itself: the screen, less each Plasma panel on it
-## that reserves space (hiding "none"). Panels are asked for at most
-## every PANEL_TTL seconds; zen_apply asks again at once.
+## that reserves space (hiding "none"). It never asks plasmashell itself,
+## so a frame never waits on it: it reads the last answer, which main.gd
+## has the desk hand renew (panels_refresh) at most every PANEL_TTL
+## seconds, and at once after zen_apply.
 ## A floating panel (Plasma 6's default) reserves its gap to the screen
 ## edge too, FLOAT_GAP logical px, so the cockpit's edge stays clear of it.
 const PANEL_TTL := 5.0
 const FLOAT_GAP := 8
 static var _panel_cache: Array = []
 static var _panels_at := -1
+## usable_rect runs on the main thread while the hand refreshes the panels:
+## the answer is swapped in whole under this lock and never changed after.
+static var _panel_lock := Mutex.new()
 
 
 static func usable_rect(screen: int) -> Rect2i:
 	if not LINUX:
 		return DisplayServer.screen_get_usable_rect(screen)
 	var r := Rect2i(DisplayServer.screen_get_position(screen), DisplayServer.screen_get_size(screen))
-	for p in _panels(false):
+	_panel_lock.lock()
+	var panels := _panel_cache
+	_panel_lock.unlock()
+	for p in panels:
 		var g: Array = p.get("g", [])
 		if g.size() != 4 or str(p.get("hiding", "")) != "none":
 			continue
@@ -655,13 +666,29 @@ static func usable_rect(screen: int) -> Rect2i:
 	return r
 
 
-static func _panels(fresh: bool) -> Array:
-	var now := Time.get_ticks_msec()
-	if fresh or _panels_at < 0 or now - _panels_at > PANEL_TTL * 1000.0:
-		_panels_at = now
-		var parsed = JSON.parse_string(_plasma(PANELS_GET))
-		_panel_cache = parsed if parsed is Array else []
-	return _panel_cache
+## Due for a fresh answer (main thread, deciding whether to ask the hand).
+static func panels_stale() -> bool:
+	_panel_lock.lock()
+	var at := _panels_at
+	_panel_lock.unlock()
+	return LINUX and (at < 0 or Time.get_ticks_msec() - at > PANEL_TTL * 1000.0)
+
+
+## Ask plasmashell where the panels are (a job on the desk hand). A failed
+## read keeps the last answer: none would grow the cockpit over them.
+## zen_read takes the answer itself, [] when there was none, so it can
+## tell "no answer" from the last one.
+static func panels_refresh() -> Array:
+	if not LINUX:
+		return []
+	var parsed = JSON.parse_string(_plasma(PANELS_GET))
+	var got: Array = parsed if parsed is Array else []
+	_panel_lock.lock()
+	_panels_at = Time.get_ticks_msec()
+	if parsed is Array:
+		_panel_cache = got
+	_panel_lock.unlock()
+	return got
 
 
 # --- D-Bus plumbing (Linux) -----------------------------------------------------
@@ -684,6 +711,12 @@ static var _wedged := {}
 static var _timed_out := false
 static var _failed := false
 static var _qdbus_bin := ""
+## The desk hand's thread while it runs (desk_hand.gd), 0 otherwise: Desk's
+## statics are one thread's at a time, the main thread's before the hand's
+## first job and after it is finished. _run checks it (debug builds), so a
+## frame that calls the desk beside the hand says so. The one thing both
+## read is the panels' answer, under its own lock (see usable_rect).
+static var owner := 0
 static var _timeout_bin = null
 
 
@@ -712,9 +745,11 @@ static func _qdbus(args: Array, secs := READ_SECS) -> String:
 	return out
 
 
-## A Z press, or the quit: every peer is asked again (see WEDGE_SECS).
+## A Z press, or the quit: every peer is asked again (see WEDGE_SECS), and
+## every listing, so a release starts from the bus as it is now.
 static func ask_again() -> void:
 	_wedged.clear()
+	_trees.clear()
 
 
 ## Whether the last call failed (timed out, or exited non-zero), which
@@ -741,6 +776,7 @@ static func _which(bin: String) -> String:
 ## which Godot reports as the signal, 9. Either sets _timed_out. The
 ## child is always reaped: OS.kill waits for one that outlives the pipe.
 static func _run(bin: String, args: Array, secs := READ_SECS) -> String:
+	assert(owner == 0 or OS.get_thread_caller_id() == owner, "desk: called beside the desk hand")
 	if _timeout_bin == null:
 		_timeout_bin = _which("timeout")
 	var argv := PackedStringArray(args)
@@ -784,16 +820,18 @@ static func _plasma(js: String, secs := READ_SECS) -> String:
 ## The bus's names ("") or a Konsole's objects. A Z press asks for the
 ## same listings over and over (terminal_current, then each step of
 ## terminal_set), and nothing the cockpit does adds or takes objects, so
-## each is asked once a frame.
+## each is asked once a job: begin() forgets them. Not once a frame: a job
+## on the desk hand spans frames, and one listing must serve all of it.
 static var _trees := {}
-static var _trees_frame := -1
+
+
+## A new piece of desk work (a job on the desk hand, the quit's release):
+## listings are asked afresh.
+static func begin() -> void:
+	_trees.clear()
 
 
 static func _tree(svc: String) -> String:
-	var frame := Engine.get_process_frames()
-	if frame != _trees_frame:
-		_trees.clear()
-		_trees_frame = frame
 	if not _trees.has(svc):
 		_trees[svc] = _qdbus([svc] if not svc.is_empty() else [])
 	return _trees[svc]

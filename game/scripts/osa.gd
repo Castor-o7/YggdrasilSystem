@@ -6,14 +6,20 @@ class_name Osa
 ## non-blocking calls in a row do not overwrite each other mid-read.
 
 static var _n := 0
+## One writer at a time, so no two calls take the same file. macOS runs the
+## desk hand (desk_hand.gd) inline on the main thread, so today there is
+## only ever one; the lock is for the day it gets a thread of its own.
+static var _lock := Mutex.new()
 
 
 static func _file(script: String) -> String:
+	_lock.lock()
 	_n = (_n + 1) % 8
 	var path := "user://osa_%d.applescript" % _n
 	var f := FileAccess.open(path, FileAccess.WRITE)
 	f.store_string(script)
 	f.close()
+	_lock.unlock()
 	return ProjectSettings.globalize_path(path)
 
 

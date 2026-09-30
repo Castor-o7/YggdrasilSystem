@@ -44,6 +44,15 @@ const NERVIEWER_DOCK := preload("res://scenes/hull/nerviewer_dock.gd")
 const KEY_CARD := preload("res://scenes/hull/key_card.gd")
 const Paths := preload("res://scripts/paths.gd")
 const Desk := preload("res://scripts/desk.gd")
+const Zen := preload("res://scripts/zen.gd")
+const DeskHand := preload("res://scripts/desk_hand.gd")
+## Every Desk call that can wait on a peer goes to the desk hand, one job
+## at a time in the order asked, so no frame waits on one (a Z press held
+## the void still 0.2 s, seconds with a slow Konsole). The quit and the
+## guard's release still wait: they hand zen back before the process ends.
+var _hand := DeskHand.new()
+## The panels are being asked for (see _ask_panels).
+var _panels_asked := false
 
 var _nerviewer_dock: Node
 
@@ -64,10 +73,13 @@ var _tree_alpha := 1.0
 var _chrono_alpha := 1.0
 var _chrono: SigilBlock
 var _key_card: Node2D
-## The desktop's chrome as it was before zen (the Dock and menu-bar
-## auto-hide on macOS, each Plasma panel's hiding mode on Linux; see
-## Desk.zen_read), so zen can hand it back exactly.
-var _zen_prev := {}
+## Zen's record (scripts/zen.gd): what the desk had before zen, so zen
+## can hand it back exactly, and whether the desk has zen now. The desk
+## hand's while it runs; this file reads only _seen, the copy the last
+## finished job gave back, which is what the prefs hold. `zen` is what
+## the keys asked for, and may be a job or two ahead of the desk.
+var _rec := Zen.record()
+var _seen := Zen.record()
 ## The instruments' slots from prefs (title -> "side:index"), kept for
 ## the blocks docked after the prefs are read.
 var _hull_prefs := {}
@@ -101,6 +113,9 @@ var _lock_held := false
 ## What the guard's release did, one line per run (see _unzen).
 const GUARD_LOG := "user://zen_guard.log"
 var _quitting := false
+## The start's settle is not done yet. Unlike a key's intent, a quit that
+## drops it still owes its unstick.
+var _settle_owed := false
 
 
 func _ready() -> void:
@@ -118,8 +133,10 @@ func _ready() -> void:
 	hull.laid_out.connect(_update_passthrough)
 	_load_prefs()
 	if persist:
-		Desk.terminal_prepare()
+		_hand.post(Desk.terminal_prepare)
 		Workspace.changed.connect(_on_workspace_changed)
+	if not desktop and DisplayServer.get_name() != "headless":
+		_ask_panels()  # so the first B has them to fit to
 	_apply_wallpaper()
 	_dock_blocks()
 	_key_card = KEY_CARD.new()
@@ -181,6 +198,7 @@ func set_desktop(on: bool) -> void:
 	win.transparent = on
 	win.borderless = on
 	win.always_on_top = on
+	_ask_panels()
 	if on:
 		var usable := Desk.usable_rect(win.current_screen)
 		win.position = usable.position
@@ -197,122 +215,58 @@ func set_desktop(on: bool) -> void:
 
 
 ## The zen paint that only makes sense over the desktop: the frames, the
-## title-bar cover (macOS), Konsole's frames taken off (Linux).
-func _zen_paint() -> void:
+## title-bar cover (macOS), Konsole's frames taken off (Linux), the last
+## on the desk hand, as `zen and desktop` says now. `borders` false: a zen
+## job sets them itself.
+func _zen_paint(borders := true) -> void:
 	frames.set_shown(zen and desktop)
 	cover.set_shown(zen and desktop)
-	if persist:  # a bystander or a tool leaves the live cockpit's borders be
-		Desk.borders(zen and desktop)
+	if persist and borders:  # a bystander or a tool leaves the live cockpit's borders be
+		_hand.post(Desk.borders.bind(zen and desktop))
 
 
 ## Zen: the Dock and the menu bar (macOS) or the Plasma panels (Linux)
 ## auto-hide, and the terminal dissolves into the void. Over the desktop,
 ## zen also frames every open window in hairlines.
 ## The terminal's zen profile is Desk.TERM_PROFILE; the one to go back to
-## is remembered here and in prefs.
-var _term_prev := ""
-## Linux: konsolerc's DefaultProfile entry from before zen (a file name,
-## "" for the built-in profile), so zen's profile never outlives zen
-## there (see Desk.terminal_default_file). Unknown until read at zen-on
-## or loaded from prefs.
-var _term_prev_file := ""
-var _term_file_known := false
-## Linux: Konsole's layout from before zen (Desk.konsole_layout), and
-## whether zen has hidden any of its bars; both in prefs, for a release
-## with no Konsole left to ask, or none that remembers.
-var _konsole_prev := {}
-var bars_hidden := false
-
-
+## is remembered in the record (Zen.remember_terminal) and in prefs.
 func set_zen(on: bool) -> void:
 	if not persist:
 		# Zen is the desk's (panels, Konsole, konsolerc), and the desk
 		# belongs to the cockpit holding the lock.
 		print("cockpit: another cockpit has the helm; zen is its to change")
 		return
-	Desk.ask_again()
-	if on and not zen:
-		# A failed read never replaces an answer we have: that would hide
-		# the chrome with nothing recorded to hand back.
-		var read := Desk.zen_read()
-		if not read.is_empty():
-			_zen_prev = read
-		_remember_terminal(Desk.terminal_current())
-		_remember_terminal_file()
-		if Desk.LINUX:
-			# Unlike the chrome's, an older snapshot is never worth keeping:
-			# a restart with zen on never gets here, so it could only be a
-			# stale layout from an earlier zen, and a failed read ({}) just
-			# skips the offline layout step.
-			_konsole_prev = Desk.konsole_layout()
 	zen = on
-	_zen_paint()
-	_desk_zen(on)
-	_refit_soon()
-	_apply_terminal(on)
-	if not on:
-		bars_hidden = false
-		Desk.hid_bars = false
-		Desk.menubar_back = false
+	_resweeps = 0
+	# The desk's part goes to the hand, Konsole's frames with it in its
+	# order; the job takes the record as the jobs before it left it, so an
+	# off hands back exactly what its on read, however fast the keys.
+	if on:
+		_hand.post(Zen.on.bind(_rec, on and desktop, _hand, _on_zen_told), _on_zen_done)
+	else:
+		_hand.post(Zen.off.bind(_rec, on and desktop), _on_zen_done)
+	_zen_paint(false)
+
+
+## Zen's record, read and not yet acted on: into prefs before the chrome
+## is hidden, so a kill mid-job leaves the guard something to hand back.
+## Not once quitting: the quit saves what the desk was left with.
+func _on_zen_told(rec: Dictionary) -> void:
+	if _quitting:
+		return
+	_seen = rec
 	_save_prefs()
 
 
-## The desktop's chrome in or out, but only with a record of how it was:
-## without one zen leaves the Dock and menu bar, or the panels, alone both
-## ways (handing back nothing would turn macOS's auto-hide off).
-func _desk_zen(on: bool, careful := false) -> String:
-	if _zen_prev.is_empty():
-		if on:
-			print("zen: could not read the desktop's chrome; leaving it as it is")
-		return "skipped (no record)"
-	return Desk.zen_apply(on, _zen_prev, careful)
-
-
-## The profile to hand the terminal back. Never the zen profile itself: if
-## zen was already in force when it was read (a restart with zen on, a
-## crash), the earlier answer stands; failing that, the profile the zen
-## profile was built from (the tools/*_zen_profile.sh scripts record it in
-## terminal/.source); failing that, Terminal's own "Basic" (Konsole's
-## configured default on Linux). Josh's default was Homebrew, and a guess
-## of "Basic" lost it once (2026-09-10).
-func _remember_terminal(name: String) -> void:
-	if not name.is_empty() and name != Desk.TERM_PROFILE:
-		_term_prev = name
+## A zen job done: the desk is as the record says.
+func _on_zen_done(rec: Dictionary) -> void:
+	_settle_owed = false  # before the guard: the quit's own join lands here
+	if _quitting:
 		return
-	if not _term_prev.is_empty() and _term_prev != Desk.TERM_PROFILE:
-		return
-	var source := Paths.find_up("terminal/.source")
-	var from := FileAccess.get_file_as_string(source).strip_edges() if not source.is_empty() else ""
-	_term_prev = from if not from.is_empty() and from != Desk.TERM_PROFILE else Desk.terminal_fallback()
-
-
-func _apply_terminal(on: bool) -> void:
-	var profile := Desk.TERM_PROFILE if on else _term_prev
-	_resweeps = 0
-	if not profile.is_empty() and (not on or Desk.terminal_ready()):
-		_owe_sweep(not Desk.terminal_set(profile) and on)
-		_note_bars()
-	if not on:
-		Desk.terminal_unstick(_terminal_file())
-
-
-## Linux: read konsolerc's default at zen-on. Already the zen profile (a
-## restart with zen on, a crash) means the earlier answer stands.
-func _remember_terminal_file() -> void:
-	if not Desk.LINUX:
-		return
-	var file := Desk.terminal_default_file()
-	if Desk.read_failed():
-		return  # no answer is not "built-in", which would lose his default
-	if file != Desk.TERM_PROFILE + ".profile":
-		_term_prev_file = file
-		_term_file_known = true
-
-
-## The konsolerc entry to hand back: as read, else found from the
-## profile's name (prefs from before it was read).
-func _terminal_file() -> String:
-	return _term_prev_file if _term_file_known else Desk.terminal_profile_file(_term_prev)
+	_seen = rec
+	_owe_sweep(zen and rec["held"] and rec["owed"])
+	_refit_soon()
+	_save_prefs()
 
 
 ## A Konsole window opened in zen starts in the default profile (a new
@@ -324,16 +278,30 @@ func _on_workspace_changed() -> void:
 	var app = Workspace.apps.get("org.kde.konsole")
 	var n: int = app.windows if app != null and app.alive else 0
 	if zen and n > _zen_konsoles:
-		_owe_sweep(not Desk.terminal_set(Desk.TERM_PROFILE))
-		_note_bars()
+		_sweep(true)
 	_zen_konsoles = n
 
 
-## Zen hid a Konsole bar: into prefs at once, so a release after a kill
-## knows to show them again.
-func _note_bars() -> void:
-	if zen and Desk.hid_bars and not bars_hidden:
-		bars_hidden = true
+## A sweep asked while one still waits is the same sweep; a new window's
+## outranks a resweep's (see _on_swept).
+func _sweep(fresh: bool) -> void:
+	_hand.post(Zen.sweep.bind(_rec), _on_swept.bind(fresh), "sweep", fresh)
+
+
+## A sweep done. `fresh`: a new window's, which owes the full count again
+## if it missed one; a resweep's own miss only uses up its turn. A bar zen
+## hid goes into prefs at once, so a release after a kill knows to show
+## them again.
+func _on_swept(rec: Dictionary, fresh: bool) -> void:
+	if _quitting:
+		return
+	var hid: bool = rec["bars_hidden"] and not _seen["bars_hidden"]
+	_seen = rec
+	if not rec["held"] or not rec["owed"]:
+		_resweeps = 0
+	elif fresh:
+		_owe_sweep(zen)
+	if hid:
 		_save_prefs()
 
 
@@ -356,9 +324,7 @@ func _resweep(dt: float) -> void:
 		return
 	_resweeps -= 1
 	_resweep_timer = RESWEEP_SECS
-	if Desk.terminal_set(Desk.TERM_PROFILE):
-		_resweeps = 0
-	_note_bars()
+	_sweep(false)
 
 
 ## The lock is the pid of the cockpit holding it and its program (godot,
@@ -425,6 +391,7 @@ static func _command_line(pid: int) -> String:
 
 
 func _exit_tree() -> void:
+	_hand.finish(0.0)  # a tool's quit: the job in hand ends, then the thread
 	_drop_lock()
 
 
@@ -444,23 +411,24 @@ func _release_zen(ours := Callable(), careful := false) -> PackedStringArray:
 	var did := PackedStringArray()
 	if not persist:
 		return did  # never took the desk, so has nothing to hand back
+	assert(not _hand.busy(), "the release runs with the desk hand finished")
 	Desk.ask_again()
-	if zen:
-		did.append("panels " + _desk_zen(false, careful))
+	if _rec["held"]:  # what the desk has, whatever the keys last asked
+		did.append("panels " + Zen.chrome(_rec, false, careful))
 		if not _still_ours(ours, did):
 			return did
-		if not _term_prev.is_empty():
-			Desk.terminal_set(_term_prev, bars_hidden)
+		if not str(_rec["term"]).is_empty():
+			Desk.terminal_set(_rec["term"], _rec["bars_hidden"])
 			did.append("konsole " + ("live (%d)" % Desk.terminal_live if Desk.terminal_live > 0 else "none running"))
 		if not _still_ours(ours, did):
 			return did
-		did.append("konsolerc " + ("handed back" if Desk.terminal_unstick(_terminal_file()) else "left"))
+		did.append("konsolerc " + ("handed back" if Desk.terminal_unstick(Zen.terminal_file(_rec)) else "left"))
 		# konsole_layout_offline checks /proc itself for a live Konsole; the
 		# bus listing may predate a wait for plasmashell.
-		if careful and bars_hidden:
+		if careful and _rec["bars_hidden"]:
 			if not _still_ours(ours, did):
 				return did
-			did.append("layout " + Desk.konsole_layout_offline(_konsole_prev))
+			did.append("layout " + Desk.konsole_layout_offline(_rec["konsole"]))
 	if not _still_ours(ours, did):
 		return did
 	did.append("frames " + ("live" if Desk.borders(false) else "skipped"))
@@ -478,12 +446,28 @@ func _still_ours(ours: Callable, did: PackedStringArray) -> bool:
 func _quit() -> void:
 	if _quitting:
 		return
+	_hand_back()
+	get_tree().quit()
+
+
+## Both ways out (Q, Escape, the window's close), once, and done before it
+## returns: the process ends straight after. The job the hand is making
+## ends (every Desk call is bounded); the ones still waiting are dropped,
+## being only what the keys asked for (the start's settle excepted: its
+## unstick is made here), and the release undoes whatever the desk was
+## left holding. The prefs say zen is on only if the desk had it
+## and the keys still wanted it, so the next start re-zens as before.
+func _hand_back() -> void:
 	_quitting = true
+	_hand.finish(0.0)
+	if _settle_owed and not _rec["held"]:
+		Desk.terminal_unstick(Zen.terminal_file(_rec))
+	_seen = Zen.copy(_rec)
+	_seen["held"] = zen and _rec["held"]
 	_save_prefs()
 	_release_zen()
 	if _nerviewer_dock:
 		_nerviewer_dock.release()
-	get_tree().quit()
 
 
 ## `--unzen [pid]` (Linux, headless): hand zen back from prefs for a
@@ -515,13 +499,11 @@ func _unzen() -> void:
 	if cfg.load(PREFS) != OK or not bool(cfg.get_value("zen", "on", false)):
 		_guard_log(who, "zen was off; nothing to hand back")
 		return
-	_zen_prev = Desk.zen_load(cfg)
-	_remember_terminal(str(cfg.get_value("zen", "prev_terminal", "")))
-	if cfg.has_section_key("zen", "prev_terminal_file"):
-		_term_prev_file = str(cfg.get_value("zen", "prev_terminal_file"))
-		_term_file_known = true
-	_load_konsole_prev(cfg)
-	zen = true
+	# No desk hand here: the guard has no frames to keep, and the release
+	# must be done before the quit.
+	_rec = Zen.load_prefs(cfg)
+	Zen.remember_terminal(_rec, _rec["term"])
+	Desk.menubar_back = Zen.menubar_back(_rec)
 	var did := _release_zen(ours, true)
 	var now := _lock_holder()
 	if now[0] > 0 and now[0] == held[0] and not _cockpit_alive(now[0], now[1]):
@@ -536,15 +518,6 @@ func _guard_log(who: String, what: String) -> void:
 	if f != null:
 		f.seek_end()
 		f.store_line(line)
-
-
-## Konsole's pre-zen layout and bars_hidden from prefs; with them the
-## menu bar comes back on the way out where zen's memory of it is lost.
-func _load_konsole_prev(cfg: ConfigFile) -> void:
-	bars_hidden = bool(cfg.get_value("zen", "bars_hidden", false))
-	if cfg.has_section_key("zen", "prev_konsole_state") and cfg.has_section_key("zen", "prev_menubar"):
-		_konsole_prev = {"state": str(cfg.get_value("zen", "prev_konsole_state")), "menubar": str(cfg.get_value("zen", "prev_menubar"))}
-	Desk.menubar_back = bars_hidden and not _konsole_prev.is_empty() and _konsole_prev["menubar"] != "Disabled"
 
 
 func set_hud(on: bool) -> void:
@@ -674,33 +647,32 @@ func _load_prefs() -> void:
 	chrono_shown = bool(cfg.get_value("look", "chrono", true))
 	_chrono_alpha = 1.0 if chrono_shown else 0.0
 	var want_desktop := bool(cfg.get_value("look", "desktop", false))
-	_zen_prev = Desk.zen_load(cfg)
+	_rec = Zen.load_prefs(cfg)
+	# Here, not in the start's job: a quit can drop that job, and the
+	# release still needs the menu bar's and the terminal's answers. The
+	# hand has no thread yet, so the desk is still this thread's.
+	Zen.remember_terminal(_rec, _rec["term"])
+	Desk.menubar_back = Zen.menubar_back(_rec)
+	_seen = Zen.copy(_rec)
 	# Read now: the prefs are saved (set_desktop, zen) before the blocks
 	# are docked, and a save then would have nothing to write for them.
 	if cfg.has_section("hull"):
 		for title in cfg.get_section_keys("hull"):
 			_hull_prefs[title] = str(cfg.get_value("hull", title))
-	_remember_terminal(str(cfg.get_value("zen", "prev_terminal", "")))
-	if cfg.has_section_key("zen", "prev_terminal_file"):
-		_term_prev_file = str(cfg.get_value("zen", "prev_terminal_file"))
-		_term_file_known = true
-	_load_konsole_prev(cfg)
-	zen = bool(cfg.get_value("zen", "on", false))
+	zen = _rec["held"]
 	if want_desktop:
+		# Where the panels are, before the first frame and before the
+		# hand has the desk: the window's first size is its right one.
+		Desk.panels_refresh()
 		set_desktop(true)
 	# Always, zen or not: a cockpit that crashed in zen may have left
 	# Konsole's frames off (Linux); this puts them back.
 	_zen_paint()
-	if zen:
-		_zen_prev = Desk.zen_merge(_zen_prev)
-		_desk_zen(true)
-		_refit_soon()
-		_apply_terminal(true)
-		_save_prefs()
-	else:
-		# A cockpit that died in zen may have left Konsole's default on the
-		# zen profile.
-		Desk.terminal_unstick(_terminal_file())
+	# Zen as saved, on the hand like a Z press: on, the record takes in any
+	# panel added since and the chrome and Konsole go again; off, Konsole's
+	# default is taken back from the zen profile if a crash left it there.
+	_settle_owed = not zen
+	_hand.post((Zen.resume if zen else Zen.settle).bind(_rec), _on_zen_done)
 
 
 func _save_prefs() -> void:
@@ -712,16 +684,7 @@ func _save_prefs() -> void:
 	cfg.set_value("look", "hud", hud)
 	cfg.set_value("look", "tree", tree_shown)
 	cfg.set_value("look", "chrono", chrono_shown)
-	cfg.set_value("zen", "on", zen)
-	Desk.zen_save(cfg, _zen_prev)
-	cfg.set_value("zen", "prev_terminal", _term_prev)
-	if _term_file_known:
-		cfg.set_value("zen", "prev_terminal_file", _term_prev_file)
-	if Desk.LINUX:
-		cfg.set_value("zen", "bars_hidden", bars_hidden)
-		if not _konsole_prev.is_empty():
-			cfg.set_value("zen", "prev_konsole_state", _konsole_prev["state"])
-			cfg.set_value("zen", "prev_menubar", _konsole_prev["menubar"])
+	Zen.save_prefs(cfg, _seen)
 	# The layout as loaded, under the layout as it stands: a save before
 	# the blocks are docked keeps their places.
 	var at: Dictionary = hull.arrangement()
@@ -733,11 +696,8 @@ func _save_prefs() -> void:
 
 
 func _notification(what: int) -> void:
-	if what == NOTIFICATION_WM_CLOSE_REQUEST:
-		_save_prefs()
-		_release_zen()
-		if _nerviewer_dock:
-			_nerviewer_dock.release()
+	if what == NOTIFICATION_WM_CLOSE_REQUEST and not _quitting:
+		_hand_back()
 
 
 func _process(dt: float) -> void:
@@ -759,11 +719,30 @@ func _process(dt: float) -> void:
 	if desktop and _screen_timer <= 0.0:
 		_screen_timer = SCREEN_BURST_GAP if _screen_burst > 0 else 1.0
 		_screen_burst = maxi(_screen_burst - 1, 0)
+		_ask_panels()
 		var win := get_window()
 		var usable := Desk.usable_rect(win.current_screen)
 		if win.position != usable.position or win.size != usable.size:
 			win.position = usable.position
 			win.size = usable.size
+
+
+## Linux: the panels are asked for on the desk hand when the last answer
+## is old (Desk.PANEL_TTL, or zen just moved them); usable_rect reads the
+## last answer, and a new one refits at once.
+func _ask_panels() -> void:
+	if _panels_asked or not Desk.panels_stale():
+		return
+	_panels_asked = true  # before the post: an inline hand answers inside it
+	if not _hand.post(Desk.panels_refresh, _on_panels):
+		_panels_asked = false
+
+
+func _on_panels(_panels: Array) -> void:
+	if _quitting:
+		return
+	_panels_asked = false
+	_screen_timer = 0.0
 
 
 ## The warp transition: the hull answers the jump. Over the charge the
