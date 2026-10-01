@@ -85,7 +85,9 @@ wanted.
    application with a Dock presence, each twig one of its windows. The
    frontmost app carries a gold bud; branches warm with the CPU they and
    their child processes burn; a branch grows in at launch and withers
-   to a ghost at quit, so by evening the tree remembers the day. Branch
+   to a ghost at quit, so by evening the tree remembers the day (the
+   last five apps that were open two minutes or more; briefer ones and
+   older ghosts fade out whole, since 2026-10-01). Branch
    length grows with how long the app has been open. Since 2026-09-15
    each branch is a Line2D of its own on one shared shader
    (`shaders/bough.gdshader`): the shader draws the hairline, its depth

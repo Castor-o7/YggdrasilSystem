@@ -5,7 +5,9 @@ extends Node2D
 ## open; each twig on it is one of that application's windows. The frontmost
 ## app carries a gold bud. Branches warm with the CPU they and their children
 ## burn. When an app quits its branch withers but stays, faint, so by evening
-## the tree remembers the day.
+## the tree remembers the day: the last few apps that stayed a while. One
+## that only passed through (a dialog, a launcher) fades out whole, and so
+## does the oldest ghost when a newer one takes its place.
 ##
 ## The crown is a solid: branches leave the OS node in three dimensions,
 ## spread left to right and alternating in front of and behind the trunk,
@@ -39,6 +41,8 @@ const MAX_TWIGS := 8
 const GROW := 1.8                # seconds for a branch to grow in
 const WITHER := 6.0              # seconds for a branch to fade after quit
 const GHOST := 0.22              # how much of a withered branch remains
+const MAX_GHOSTS := 5            # withered branches kept, the latest to quit; the rest fade out
+const GHOST_STAY := 120.0        # seconds an app must have been open to leave a ghost
 const TURN := 1.2                # radians per second a branch swings to its slot
 const LABEL_SIZE := 10
 
@@ -145,6 +149,7 @@ func _sync(dt: float) -> void:
 		b.az_target = az
 		b.el_target = el
 		b.reach = _length(app)
+	var kept := _kept_ghosts()
 	# A ghost left on a slot a live app now holds steps to the far side of
 	# the trunk: the same place across the crown, the other depth. Slots
 	# alternate front and back, so no live branch is there.
@@ -181,9 +186,41 @@ func _sync(dt: float) -> void:
 			while b.twigs.size() > want and b.twigs[-1] <= 0.0:
 				b.twigs.pop_back()
 		else:
-			b.life = maxf(GHOST, b.life - dt / WITHER)
+			b.life = maxf(GHOST if kept.has(id) else 0.0, b.life - dt / WITHER)
 			for k in b.twigs.size():
 				b.twigs[k] = maxf(0.0, b.twigs[k] - dt / GROW)
+	# A branch faded to nothing is gone, bough and all; its app grows a new
+	# one if it comes back.
+	for id in _branches.keys():
+		var app = Workspace.apps.get(id)
+		if _branches[id].life > 0.0 or (app != null and app.alive):
+			continue
+		_branches.erase(id)
+		var bough: Line2D = _boughs.get(id)
+		if bough != null:
+			_boughs.erase(id)
+			bough.queue_free()
+
+
+## The ghosts that stay: of the quit apps that were open a while, the
+## latest MAX_GHOSTS to go. Without a bound every dialog and launcher of
+## the day left one, and by afternoon the crown was mostly ghosts.
+func _kept_ghosts() -> Dictionary:
+	var dead: Array = []
+	for id in _branches:
+		var app = Workspace.apps.get(id)
+		if app == null or app.alive:
+			continue
+		var stay: float = app.gone - app.seen
+		if app.launched <= 0.0:
+			stay *= 60.0  # scripted day: a minute is an hour
+		if stay >= GHOST_STAY:
+			dead.append(app)
+	dead.sort_custom(func(a, b): return a.gone > b.gone if a.gone != b.gone else a.id < b.id)
+	var out := {}
+	for i in mini(dead.size(), MAX_GHOSTS):
+		out[dead[i].id] = true
+	return out
 
 
 static func _slot_key(id: String) -> float:
