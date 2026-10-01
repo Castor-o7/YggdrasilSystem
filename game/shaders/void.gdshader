@@ -251,7 +251,11 @@ void fragment() {
 	float rim = smoothstep(0.35, 1.05, length(c));
 	// The bottom band, where the hull will sit, is the brightest part.
 	float bottom = smoothstep(0.62, 1.0, UV.y);
-	float mask = mix(center_clear, 1.0, max(rim, bottom * 0.85));
+	// The lattice alone is the windshield's frame, not a veil over it: the
+	// outer strip of the sides and corners and the bottom tenth, nothing in
+	// between. It once took the stars' reach (rim and bottom above) with a
+	// center_clear floor everywhere, until Josh trimmed it (2026-09-30).
+	float mask = max(smoothstep(0.85, 1.1, length(c)), smoothstep(0.9, 1.0, UV.y) * 0.85);
 
 	vec4 dst = vec4(ground.rgb, ground_alpha);
 
